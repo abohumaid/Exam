@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="ar" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Exam</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;900&family=Tajawal:wght@300;400;500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start; /* Align items to the top */
+      align-items: center;
+      min-height: 100vh;
+      background-color: var(--bg-base);
+      color: var(--text-primary);
+      text-align: center;
+      padding: 20px;
+      padding-top: 40px; /* Add some padding at the top */
+    }
+    .exam-header {
+      width: 100%;
+      max-width: 900px;
+      margin-bottom: 30px;
+      text-align: left;
+    }
+    .exam-header h1 {
+      color: var(--primary);
+      font-size: 2.2rem;
+      margin-bottom: 10px;
+    }
+    .exam-header p {
+      color: var(--text-secondary);
+      font-size: 1.1rem;
+    }
+    .questions-container {
+      /* Removed background, border and shadow to avoid "box inside box" */
+      max-width: 900px;
+      width: 100%;
+      margin-bottom: 30px;
+      text-align: left;
+    }
+    .question-item {
+      margin-bottom: 20px;
+      padding: 20px;
+      background: var(--bg-glass); /* Using glass background for the main card */
+      border: 1px solid var(--border);
+      border-radius: var(--border-radius);
+      box-shadow: var(--shadow-sm);
+      transition: var(--transition);
+    }
+    .question-item:hover {
+      border-color: var(--primary);
+      background: rgba(108, 99, 255, 0.05);
+    }
+    .question-item:last-child {
+      margin-bottom: 0;
+    }
+    .question-text {
+      font-size: 0.875rem; /* Unified small font */
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 10px; /* Reduced from 15px */
+      line-height: 1.4;
+      /* Allow full display */
+      display: block;
+      overflow: visible;
+    }
+    .options-container {
+      display: flex;
+      flex-direction: column;
+      gap: 6px; /* Reduced from 10px */
+    }
+    .option-label {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--border-radius-sm);
+      padding: 10px 16px; 
+      cursor: pointer;
+      transition: var(--transition);
+      font-size: 0.875rem; /* Unified with question */
+      color: var(--text-secondary);
+      /* Allow multiple lines */
+      white-space: normal;
+      overflow: visible;
+      line-height: 1.4;
+    }
+    .option-text {
+      flex: 1;
+      text-align: left;
+      overflow: visible;
+    }
+    .option-label:hover {
+      border-color: var(--primary);
+      background: rgba(108, 99, 255, 0.06);
+      color: var(--text-primary);
+    }
+    .option-label input[type="radio"],
+    .option-label input[type="checkbox"] {
+      accent-color: var(--primary);
+      width: 18px;
+      height: 18px;
+      flex-shrink: 0;
+    }
+    .option-letter {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 0.9rem;
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.06);
+      flex-shrink: 0;
+      text-transform: uppercase;
+    }
+    .option-text {
+      flex: 1;
+      text-align: left;
+    }
+    .submit-button-container {
+      width: 100%;
+      max-width: 900px;
+      margin-bottom: 30px;
+    }
+    .results-container {
+      background: var(--bg-glass);
+      border: 1px solid var(--border);
+      border-radius: var(--border-radius);
+      padding: 30px;
+      max-width: 900px;
+      width: 100%;
+      box-shadow: var(--shadow-md);
+      text-align: left;
+      display: none; /* Hidden by default */
+    }
+    .results-container h2 {
+      color: var(--success);
+      font-size: 2rem;
+      margin-bottom: 20px;
+      text-align: center;
+    }
+    .results-summary {
+      display: flex;
+      justify-content: space-around;
+      margin-bottom: 30px;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    .summary-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--border-radius-sm);
+      padding: 15px 25px;
+      text-align: center;
+      flex: 1;
+      min-width: 150px;
+    }
+    .summary-item span:first-child {
+      display: block;
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 5px;
+    }
+    .summary-item span:last-child {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+    }
+    .results-details .question-item {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--border-radius-sm);
+      padding: 15px;
+      margin-bottom: 15px;
+    }
+    .results-details .question-text {
+      font-size: 0.875rem; /* Unified small font */
+      margin-bottom: 10px;
+    }
+    .results-details .option-label {
+      background: var(--bg-surface);
+      border-color: var(--border);
+      cursor: default;
+    }
+    .results-details .option-label.correct-answer {
+      background: rgba(0, 201, 141, 0.15);
+      border-color: var(--success);
+      color: var(--success);
+    }
+    .results-details .option-label.correct-answer .option-letter {
+      border-color: var(--success);
+      color: var(--success);
+    }
+    .results-details .option-label.wrong-answer {
+      background: rgba(255, 82, 82, 0.15);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .results-details .option-label.selected-wrong {
+      background: rgba(255, 82, 82, 0.25);
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .results-details .option-label.selected-wrong .option-letter {
+      border-color: var(--danger);
+      color: var(--danger);
+    }
+    .results-details .option-label input {
+      display: none; /* Hide radio/checkbox in results */
+    }
+    .results-details .feedback-icon {
+      margin-left: auto;
+      width: 20px;
+      height: 20px;
+    }
+    .results-details .feedback-icon svg {
+      width: 100%;
+      height: 100%;
+    }
+    .results-details .feedback-icon.correct svg { color: var(--success); }
+    .results-details .feedback-icon.wrong svg { color: var(--danger); }
+    .back-to-home-button {
+      margin-top: 30px;
+    }
+    @media (max-width: 768px) {
+      body { padding: 15px; padding-top: 30px; }
+      .exam-header h1 { font-size: 1.5rem; }
+      .exam-header p { font-size: 0.85rem; }
+      .questions-container { padding: 15px; }
+      .question-text { font-size: 0.875rem; }
+      .option-label { padding: 8px 10px; font-size: 0.875rem; }
+      .results-container { padding: 20px; }
+      .results-container h2 { font-size: 1.4rem; }
+      .summary-item { min-width: 80px; padding: 8px; }
+      .summary-item span:first-child { font-size: 1.2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="bg-particles">
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+    <div class="particle"></div>
+  </div>
+
+  <div class="exam-header">
+    <h1>الامتحان</h1>
+    <p>أجب على الأسئلة التالية لتقييم معرفتك.</p>
+  </div>
+
+  <div class="questions-container" id="questionsContainer">
+    <!-- Questions will be loaded here dynamically by exam.js -->
+  </div>
+
+  <div class="submit-button-container">
+    <button class="btn btn-success btn-large" id="submitExamBtn" style="display: none;">
+      تقديم الامتحان
+    </button>
+  </div>
+
+  <div class="results-container" id="resultsContainer">
+    <h2>نتائج الامتحان</h2>
+    <div class="results-summary">
+      <div class="summary-item">
+        <span id="scoreDisplay">0</span>
+        <span>الدرجة</span>
+      </div>
+      <div class="summary-item">
+        <span id="correctCountDisplay">0</span>
+        <span>إجابات صحيحة</span>
+      </div>
+      <div class="summary-item">
+        <span id="wrongCountDisplay">0</span>
+        <span>إجابات خاطئة</span>
+      </div>
+    </div>
+    <h3>مراجعة الإجابات:</h3>
+    <div class="results-details" id="resultsDetails">
+      <!-- Detailed results will be loaded here -->
+    </div>
+    <button class="btn btn-primary btn-large back-to-home-button" onclick="window.location.href='index.html'">
+      العودة إلى الصفحة الرئيسية
+    </button>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <script src="exam.js"></script>
+</body>
+</html>
