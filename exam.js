@@ -119,6 +119,10 @@ function renderQuestions() {
       input.value = option.id;
       input.addEventListener('change', (event) => {
         userAnswers[question.id] = event.target.value;
+        // Immediate visual feedback
+        const parent = optionLabel.parentElement;
+        parent.querySelectorAll('.option-label').forEach(label => label.classList.remove('selected'));
+        optionLabel.classList.add('selected');
       });
 
       const optionLetter = document.createElement('span');
