@@ -18,13 +18,13 @@
       background-color: var(--bg-base);
       color: var(--text-primary);
       text-align: center;
-      padding: 20px;
-      padding-top: 40px; /* Add some padding at the top */
+      padding: 10px; /* Reduced from 20px */
+      padding-top: 30px; /* Reduced from 40px */
     }
     .exam-header {
       width: 100%;
-      max-width: 900px;
-      margin-bottom: 30px;
+      max-width: 1000px;
+      margin-bottom: 20px; /* Reduced from 30px */
       text-align: left;
     }
     .exam-header h1 {
@@ -38,14 +38,14 @@
     }
     .questions-container {
       /* Removed background, border and shadow to avoid "box inside box" */
-      max-width: 900px;
+      max-width: 1000px; /* Increased from 900px */
       width: 100%;
-      margin-bottom: 30px;
+      margin-bottom: 20px; /* Reduced from 30px */
       text-align: left;
     }
     .question-item {
-      margin-bottom: 20px;
-      padding: 20px;
+      margin-bottom: 10px; /* Reduced from 15px */
+      padding: 15px; /* Reduced to enlarge content area */
       background: var(--bg-glass); /* Using glass background for the main card */
       border: 1px solid var(--border);
       border-radius: var(--border-radius);
@@ -60,11 +60,11 @@
       margin-bottom: 0;
     }
     .question-text {
-      font-size: 0.875rem; /* Unified small font */
+      font-size: 1rem; /* Kept large for visibility */
       font-weight: 600;
       color: var(--text-primary);
-      margin-bottom: 10px; /* Reduced from 15px */
-      line-height: 1.4;
+      margin-bottom: 10px; /* Reduced */
+      line-height: 1.5;
       /* Allow full display */
       display: block;
       overflow: visible;
@@ -72,7 +72,7 @@
     .options-container {
       display: flex;
       flex-direction: column;
-      gap: 6px; /* Reduced from 10px */
+      gap: 6px; /* Reduced gaps */
     }
     .option-label {
       display: flex;
@@ -81,10 +81,10 @@
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--border-radius-sm);
-      padding: 10px 16px; 
+      padding: 10px 15px; /* Reduced padding */
       cursor: pointer;
       transition: var(--transition);
-      font-size: 0.875rem; /* Unified with question */
+      font-size: 0.95rem; 
       color: var(--text-secondary);
       /* Allow multiple lines */
       white-space: normal;
@@ -233,13 +233,13 @@
       margin-top: 30px;
     }
     @media (max-width: 768px) {
-      body { padding: 15px; padding-top: 30px; }
+      body { padding: 8px; padding-top: 20px; }
       .exam-header h1 { font-size: 1.5rem; }
       .exam-header p { font-size: 0.85rem; }
-      .questions-container { padding: 15px; }
+      .questions-container { padding: 0; } /* Removed container padding to give more room */
       .question-text { font-size: 0.875rem; }
       .option-label { padding: 8px 10px; font-size: 0.875rem; }
-      .results-container { padding: 20px; }
+      .results-container { padding: 15px; }
       .results-container h2 { font-size: 1.4rem; }
       .summary-item { min-width: 80px; padding: 8px; }
       .summary-item span:first-child { font-size: 1.2rem; }
