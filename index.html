@@ -189,12 +189,24 @@
             <div class="upload-hints">
               <div class="hint-item">
                 <span class="hint-badge mc">MCQ</span>
-                <span>السؤال الاختياري: ينتهي بـ <code>#</code> والإجابة الصحيحة بـ <code>##</code></span>
+                <span>الاختياري: يمكن استخدام <code>##</code> في نهاية السؤال (اختياري). الإجابة الصحيحة: <code>#</code> في النهاية، أو <code>=</code> في بداية أو نهاية السطر. مع تفعيل Groq يُستخرج السؤال من السياق حتى بدون <code>##</code>.</span>
               </div>
               <div class="hint-item">
                 <span class="hint-badge tf">T/F</span>
-                <span>سؤال صح/غلط: ينتهي بـ <code>!!</code> للصحيح (True) أو <code>!</code> للخطأ (False)</span>
+                <span>صح/غلط: السؤال قد ينتهي بـ <code>**</code> أو <code>*</code> — الإجابة الصحيحة <code>=</code> أو <code>!!</code> في النهاية، والخاطئة <code>!=</code> أو <code>!</code> (في بداية أو نهاية السطر)</span>
               </div>
+            </div>
+            <div class="groq-upload-panel">
+              <p class="groq-upload-title">تحسين الاستخراج بـ Groq (اختياري)</p>
+              <label class="groq-upload-row">
+                <input type="checkbox" id="useGroqCheckbox" />
+                <span>استخدم الذكاء الاصطناعي أولاً عند الرفع (لالتقاط الأسئلة بدون ##) — أو يُستدعى تلقائياً إذا فشلت القواعد وكان هناك مفتاح</span>
+              </label>
+              <div class="groq-upload-row groq-upload-inputs">
+                <input type="password" id="groqApiKeyInput" class="form-input groq-key-input" autocomplete="off" spellcheck="false" />
+                <button type="button" class="btn btn-ghost" id="saveGroqKeyBtn">حفظ المفتاح</button>
+              </div>
+              <p class="groq-upload-note">مفتاح افتراضي مضمّن في الكود؛ إن لصقت مفتاحاً وحفظته يُستخدم من المتصفح بدلاً منه. لا تنشر الصفحة علناً لأن المفتاح يظهر في المصدر.</p>
             </div>
           </div>
         </div>

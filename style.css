@@ -411,6 +411,55 @@ body {
 .hint-badge.mc { background: rgba(108, 99, 255, 0.2); color: var(--primary); border: 1px solid rgba(108, 99, 255, 0.3); }
 .hint-badge.tf { background: rgba(0, 212, 170, 0.2); color: var(--secondary); border: 1px solid rgba(0, 212, 170, 0.3); }
 
+.groq-upload-panel {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+  max-width: 100%;
+}
+
+.groq-upload-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.groq-upload-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.groq-upload-row input[type="checkbox"] {
+  margin-top: 4px;
+  accent-color: var(--primary);
+  flex-shrink: 0;
+}
+
+.groq-upload-inputs {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.groq-key-input {
+  flex: 1;
+  min-width: 200px;
+  margin: 0;
+}
+
+.groq-upload-note {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
 code {
   background: rgba(255, 255, 255, 0.1);
   padding: 2px 6px;

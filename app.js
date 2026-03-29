@@ -34,6 +34,20 @@ let editingIndex = null;    // which question is being edited
 let currentFilter = 'all';  // current filter tab
 let isNavbarCollapsed = false;
 const ACTIVE_EXAM_STORAGE_KEY = 'active-exam-questions';
+const GROQ_API_KEY_STORAGE_KEY = 'groq-api-key';
+const USE_GROQ_UPLOAD_KEY = 'use-groq-upload';
+const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL = 'llama-3.3-70b-versatile';
+
+/** مفتاح Groq الافتراضي. أي مفتاح تُدخله وتضغط «حفظ» يُخزَّن في المتصفح ويستبدل هذا. لا تنشر المشروع علناً — المفتاح يظهر في المصدر. */
+const DEFAULT_GROQ_API_KEY =
+  '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';
+
+function getGroqApiKey() {
+  const saved = localStorage.getItem(GROQ_API_KEY_STORAGE_KEY);
+  if (saved && String(saved).trim()) return String(saved).trim();
+  return String(DEFAULT_GROQ_API_KEY || '').trim();
+}
 
 function persistActiveExamQuestions() {
   try {
@@ -90,6 +104,120 @@ window.handleFileUpload = async (event) => {
   fileInput.value = '';
 };
 
+function extractJsonArrayFromAssistantText(text) {
+  const trimmed = String(text || '').trim();
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced) return fenced[1].trim();
+  const start = trimmed.indexOf('[');
+  const end = trimmed.lastIndexOf(']');
+  if (start >= 0 && end > start) return trimmed.slice(start, end + 1);
+  return trimmed;
+}
+
+function normalizeGroqQuestions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const type = item.type === 'tf' ? 'tf' : 'mc';
+    let question = String(item.question || '').trim();
+    question = question.replace(/\s*##\s*$/, '').replace(/\s*\*+\s*$/, '').trim();
+    if (!question) continue;
+    let answers = Array.isArray(item.answers)
+      ? item.answers.map((a) => String(a).trim()).filter(Boolean)
+      : [];
+    if (answers.length < 2) continue;
+    let correctIndex = Number(item.correctIndex);
+    if (
+      !Number.isInteger(correctIndex) ||
+      correctIndex < 0 ||
+      correctIndex >= answers.length
+    ) {
+      if (item.correctAnswer != null && item.correctAnswer !== '') {
+        const want = String(item.correctAnswer).trim();
+        const found = answers.findIndex((a) => a === want);
+        correctIndex = found >= 0 ? found : 0;
+      } else {
+        correctIndex = 0;
+      }
+    }
+    out.push({
+      type,
+      question,
+      answers,
+      correctIndex,
+      id: generateId(),
+      sourceNumber: String(out.length + 1)
+    });
+  }
+  return out;
+}
+
+async function fetchQuestionsFromGroq(rawText, apiKey) {
+  const maxChars = 14000;
+  const excerpt =
+    rawText.length > maxChars
+      ? rawText.slice(0, maxChars) +
+        '\n\n[... تم اقتصار النص لحدود الطلب — راجع الملف أو قسّمه إذا كان طويلاً جداً]'
+      : rawText;
+
+  const systemPrompt = `أنت محلل أسئلة امتحانات عربية/إنجليزية. استخرج من النص كل الأسئلة وصنّفها بدقة.
+
+مهم — أسئلة الاختيار من متعدد (mc):
+- لا تشترط أن ينتهي سطر السؤال بـ ##. اعتمد على السياق: غالباً سطر أو أكثر يصف السؤال (قد ينتهي بـ ؟) ثم تليها أسطر الخيارات.
+- قد يظهر ## في نهاية السؤال أحياناً؛ إن وُجد احذفه من نص السؤال في الحقل question.
+- الإجابة الصحيحة قد تُعلَّم بـ: # في نهاية السطر، أو = في بداية السطر أو نهايته (مثل "= خيار" أو "خيار =")، وليس !=.
+- الخيارات الخاطئة بدون علامة، أو بعلامات أخرى غير = للصحيح.
+
+مهم — صح وخطأ (tf):
+- سؤال ينتهي أحياناً بـ * أو ** ثم سطران للإجابتين، أو سؤال صيغته (صح/غلط، نعم/لا).
+- الإجابة الصحيحة: = في البداية أو النهاية، أو !! في النهاية.
+- الإجابة الخاطئة: != في البداية أو النهاية، أو ! في النهاية (وليس !!).
+
+التصنيف:
+- type "tf" لسؤال صحيح/خطأ أو نعم/لا أو True/False (خياران فقط).
+- type "mc" لسؤال له عدة خيارات (3 فأكثر عادة).
+
+أعد مصفوفة JSON فقط بدون markdown.
+كل عنصر: {"type":"mc"|"tf","question":"...","answers":["..."],"correctIndex":0}
+- answers: نصوص نظيفة بدون ## # = != !! ! في النص النهائي.
+- correctIndex: مؤشر الإجابة الصحيحة (0-based).
+إذا لم توجد أسئلة أعد [].`;
+
+  const res = await fetch(GROQ_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: excerpt }
+      ],
+      temperature: 0.2,
+      max_tokens: 8192
+    })
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      data.error?.message ||
+      data.message ||
+      `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw new Error('لا يوجد رد من النموذج');
+
+  const jsonStr = extractJsonArrayFromAssistantText(content);
+  const parsed = JSON.parse(jsonStr);
+  return normalizeGroqQuestions(parsed);
+}
+
 async function processFile(file) {
   showLoading('جاري قراءة الملف...');
   try {
@@ -98,14 +226,47 @@ async function processFile(file) {
     const result = await mammoth.extractRawText({ arrayBuffer });
     setLoadingText('جاري تحليل الأسئلة...');
     const rawText = result.value;
-    const questions = parseQuestions(rawText);
+    let questions = [];
+
+    const groqKey = getGroqApiKey();
+    const useGroq = localStorage.getItem(USE_GROQ_UPLOAD_KEY) === '1';
+
+    if (groqKey && useGroq) {
+      setLoadingText('جاري استخراج الأسئلة عبر الذكاء الاصطناعي (Groq)...');
+      try {
+        const aiQuestions = await fetchQuestionsFromGroq(rawText, groqKey);
+        if (aiQuestions.length > 0) questions = aiQuestions;
+      } catch (groqErr) {
+        console.error(groqErr);
+        showToast(
+          'تنبيه: فشل Groq، يُجرى التحليل بالقواعد. ' +
+            (groqErr.message || String(groqErr)),
+          'warning'
+        );
+      }
+    }
+
+    if (questions.length === 0) {
+      questions = parseQuestions(rawText);
+    }
+
+    if (questions.length === 0 && groqKey && !useGroq) {
+      setLoadingText('جاري استخراج الأسئلة عبر الذكاء الاصطناعي (Groq)...');
+      try {
+        const aiQuestions = await fetchQuestionsFromGroq(rawText, groqKey);
+        if (aiQuestions.length > 0) questions = aiQuestions;
+      } catch (groqErr) {
+        console.error(groqErr);
+      }
+    }
+
     if (questions.length === 0) {
       hideLoading();
       // Show first 300 chars of extracted text to help debug
       const preview = rawText.replace(/\s+/g, ' ').trim().slice(0, 300);
       console.warn('No questions found. Extracted text preview:', preview);
       showToast(
-        'لم يتم العثور على أسئلة! تأكد أن السؤال ينتهي بـ # (أو * لصح/غلط) وأن الإجابة الصحيحة تنتهي بـ ## (أو **)',
+        'لم يتم العثور على أسئلة! فعّل «استخدم الذكاء الاصطناعي» لالتقاط الأسئلة بدون ##، أو استخدم القواعد: ## / # / = / != في بداية أو نهاية السطر.',
         'error'
       );
       return;
@@ -130,25 +291,85 @@ async function processFile(file) {
 // ============================================
 
 // Helper: does this line mark an MCQ question?
-// Accepts: "text #"  "text?#"  "text ?#"  "1. text #"
+// Accepts: "text ##"  "text?##"  "text ?##"  "1. text ##"
 function isMCQuestion(line) {
-  return /\S\s*#\s*$/.test(line) && !/\S\s*##\s*$/.test(line);
-}
-
-// Helper: does this line mark a MCQ correct answer?
-function isMCCorrect(line) {
   return /\S\s*##\s*$/.test(line);
 }
 
-// Helper: does this line mark a TF question?
-function isTFQuestion(line) {
-  // New: ends with ! or !! OR Original: ends with *
-  return /\S\s*!!\s*$/.test(line) || /\S\s*!\s*$/.test(line) || (/\S\s*\*\s*$/.test(line) && !/\S\s*\*\*\s*$/.test(line));
+// إجابة صحيحة للاختياري: تنتهي بـ # أو تبدأ بـ = (وليس !=)
+function isMCCorrectTrailingHash(line) {
+  return /\S\s*#\s*$/.test(line) && !/\S\s*##\s*$/.test(line);
 }
 
-// Helper: does this line mark a TF correct answer?
-function isTFCorrect(line) {
-  return /\S\s*\*\*\s*$/.test(line);
+function isLeadingEqualsCorrect(line) {
+  const t = String(line).trim();
+  return t.startsWith('=') && !t.startsWith('!=');
+}
+
+function isLeadingNotEqualsWrong(line) {
+  return String(line).trim().startsWith('!=');
+}
+
+/** = في نهاية السطر (ليس !=) */
+function isTrailingEqualsCorrect(line) {
+  const t = String(line).trim();
+  if (t.endsWith('!=')) return false;
+  return t.endsWith('=');
+}
+
+/** != في نهاية السطر */
+function isTrailingNotEqualsWrong(line) {
+  return String(line).trim().endsWith('!=');
+}
+
+function stripMCCorrectAnswerText(line) {
+  const t = String(line).trim();
+  if (isLeadingEqualsCorrect(line)) return stripAnswerPrefix(t.replace(/^=\s*/, '').trim());
+  if (isTrailingEqualsCorrect(line)) return stripAnswerPrefix(t.replace(/\s*=\s*$/, '').trim());
+  return stripMarker(line, '#');
+}
+
+function stripTfTrailingEqMarkers(s) {
+  let t = String(s).trim();
+  if (t.endsWith('!=')) return t.slice(0, -2).trim();
+  if (t.endsWith('=')) return t.slice(0, -1).trim();
+  return t;
+}
+
+// Helper: does this line mark a TF question?
+// - ينتهي بـ ** (علامة صح/خطأ صريحة) أو بـ * (قديم)
+function isTFQuestion(line) {
+  if (/\S\s*\*\*\s*$/.test(line)) return true;
+  if (/\S\s*\*\s*$/.test(line)) return true;
+  return false;
+}
+
+function stripTFQuestionMarker(line) {
+  if (/\S\s*\*\*\s*$/.test(line)) return stripMarker(line, '**');
+  return stripMarker(line, '*');
+}
+
+// صح/خطأ: صحيح = في بداية السطر، أو !! في النهاية (قديم)
+function isTFCorrectTrailing(line) {
+  return /\S\s*!!\s*$/.test(line);
+}
+
+function isTFWrongTrailing(line) {
+  return /\S\s*!\s*$/.test(line) && !/\S\s*!!\s*$/.test(line);
+}
+
+function stripTFCorrectAnswerText(line) {
+  const t = String(line).trim();
+  if (isLeadingEqualsCorrect(line)) return stripAnswerPrefix(t.replace(/^=\s*/, '').trim());
+  if (isTrailingEqualsCorrect(line)) return stripAnswerPrefix(t.replace(/\s*=\s*$/, '').trim());
+  return stripAnswerPrefix(stripMarker(line, '!!'));
+}
+
+function stripTFWrongAnswerText(line) {
+  const t = String(line).trim();
+  if (isLeadingNotEqualsWrong(line)) return stripAnswerPrefix(t.replace(/^!=\s*/, '').trim());
+  if (isTrailingNotEqualsWrong(line)) return stripAnswerPrefix(t.replace(/\s*!=\s*$/, '').trim());
+  return stripAnswerPrefix(stripMarker(line, '!'));
 }
 
 // Remove trailing marker(s) and clean text
@@ -170,6 +391,77 @@ function extractLeadingNumber(text) {
 // Skip "Answer: ..." lines and similar annotation lines
 function isAnnotationLine(line) {
   return /^(answer|الاجابة|الإجابة|الجواب)\s*:/i.test(line);
+}
+
+// Numbered question style: 1. ... / 1) ... / Q1. ...
+function isNumberedQuestionStart(line) {
+  return /^\s*(?:Q\s*)?\d+[\.\)]\s+\S/.test(line);
+}
+
+function stripAnswerPrefix(line) {
+  // Remove common option prefixes: A) / A. / a- / 1) / 1. / - / •
+  return line
+    .replace(/^\s*[A-Za-z][\)\.\-:]\s+/, '')
+    .replace(/^\s*\d+[\)\.\-:]\s+/, '')
+    .replace(/^\s*[-•]\s+/, '')
+    .trim();
+}
+
+function stripTfTrailingMarkers(s) {
+  return String(s)
+    .replace(/\s*!!\s*$/, '')
+    .replace(/\s*!\s*$/, '')
+    .trim();
+}
+
+function stripTfLeadingEqMarkers(s) {
+  let t = String(s).trim();
+  if (t.startsWith('!=')) return t.slice(2).trim();
+  if (t.startsWith('=')) return t.slice(1).trim();
+  return t;
+}
+
+function normalizeTfToken(text) {
+  const t = stripTfTrailingMarkers(
+    stripTfTrailingEqMarkers(stripTfLeadingEqMarkers(String(text)))
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/[٫٬،.?!؟]/g, '')
+    .replace(/\s+/g, ' ');
+  if (t.startsWith('صحيح') || t === 'صح' || t === 'ص') return 'صحيح';
+  if (t.startsWith('خطأ') || t.startsWith('غلط') || t.startsWith('خطا')) return 'خطأ';
+  if (t === 'true' || t === 't') return 'true';
+  if (t === 'false' || t === 'f') return 'false';
+  if (t === 'نعم' || t === 'yes' || t === 'y') return 'نعم';
+  if (t === 'لا' || t === 'no' || t === 'n') return 'لا';
+  return t;
+}
+
+function isTrueFalsePair(answers) {
+  if (!Array.isArray(answers) || answers.length !== 2) return false;
+  const a = normalizeTfToken(answers[0]);
+  const b = normalizeTfToken(answers[1]);
+  const tfPairs = [
+    ['true', 'false'],
+    ['false', 'true'],
+    ['صحيح', 'خطأ'],
+    ['خطأ', 'صحيح'],
+    ['صح', 'غلط'],
+    ['غلط', 'صح'],
+    ['نعم', 'لا'],
+    ['لا', 'نعم'],
+    ['yes', 'no'],
+    ['no', 'yes']
+  ];
+  return tfPairs.some(([x, y]) => a === x && b === y);
+}
+
+/** صح/خطأ: زوج !! و ! أو زوج = و != (في بداية أو نهاية السطر) */
+function hasTfMarkerPair(answers, hadTrueMarker, hadFalseMarker, hadEqMarker, hadNeMarker) {
+  if (answers.length === 2 && hadEqMarker && hadNeMarker) return true;
+  if (hadTrueMarker && hadFalseMarker && answers.length === 2) return true;
+  return false;
 }
 
 function parseQuestions(text) {
@@ -201,6 +493,7 @@ function parseQuestions(text) {
     if (isAnnotationLine(lines[next])) return false;   // annotation — keep going (will skip it)
     if (isMCQuestion(lines[next])) return true;        // next question starts
     if (isTFQuestion(lines[next])) return true;        // next TF question starts
+    if (isNumberedQuestionStart(lines[next])) return true; // next numbered question starts
     return false;                                      // still an answer line
   }
 
@@ -211,73 +504,112 @@ function parseQuestions(text) {
     // Skip empty and annotation lines at top level
     if (!line || isAnnotationLine(line)) { i++; continue; }
 
-    // ── MCQ Question ──────────────────────────────────
-    if (isMCQuestion(line)) {
-      const parsedQuestion = extractLeadingNumber(stripMarker(line, '#'));
+    // ── Numbered Question (fallback without markers) ──
+    if (isNumberedQuestionStart(line) && !isMCQuestion(line) && !isTFQuestion(line)) {
+      const parsedQuestion = extractLeadingNumber(line);
       const questionText = parsedQuestion.text;
       i++;
+
       const answers = [];
       let correctIndex = -1;
+      let hadTfTrueMarker = false;
+      let hadTfFalseMarker = false;
+      let hadEqMarker = false;
+      let hadNeMarker = false;
 
       while (i < lines.length) {
         const aLine = lines[i];
 
-        // Blank line — check if we should stop or just skip it
         if (!aLine) {
           if (shouldStop(i + 1)) { i++; break; }
-          i++; continue;  // blank between answers — skip and keep collecting
+          i++;
+          continue;
         }
 
-        // Next question starts → stop
-        if (isMCQuestion(aLine) || isTFQuestion(aLine)) break;
-
-        // Annotation line ("Answer: ...") → skip
+        if (isMCQuestion(aLine) || isTFQuestion(aLine) || isNumberedQuestionStart(aLine)) break;
         if (isAnnotationLine(aLine)) { i++; continue; }
 
-        if (isMCCorrect(aLine)) {
-          const answerText = stripMarker(aLine, '##');
-          if (answerText) { correctIndex = answers.length; answers.push(answerText); }
+        if (isLeadingNotEqualsWrong(aLine)) {
+          hadTfFalseMarker = true;
+          hadNeMarker = true;
+          const answerText = stripTFWrongAnswerText(aLine);
+          if (answerText) answers.push(answerText);
+        } else if (isTrailingNotEqualsWrong(aLine)) {
+          hadTfFalseMarker = true;
+          hadNeMarker = true;
+          const answerText = stripTFWrongAnswerText(aLine);
+          if (answerText) answers.push(answerText);
+        } else if (isLeadingEqualsCorrect(aLine)) {
+          hadTfTrueMarker = true;
+          hadEqMarker = true;
+          const answerText = stripMCCorrectAnswerText(aLine);
+          if (answerText) {
+            correctIndex = answers.length;
+            answers.push(answerText);
+          }
+        } else if (isTrailingEqualsCorrect(aLine)) {
+          hadTfTrueMarker = true;
+          hadEqMarker = true;
+          const answerText = stripMCCorrectAnswerText(aLine);
+          if (answerText) {
+            correctIndex = answers.length;
+            answers.push(answerText);
+          }
+        } else if (isMCCorrectTrailingHash(aLine)) {
+          const answerText = stripAnswerPrefix(stripMarker(aLine, '#'));
+          if (answerText) {
+            correctIndex = answers.length;
+            answers.push(answerText);
+          }
+        } else if (isTFCorrectTrailing(aLine)) {
+          hadTfTrueMarker = true;
+          const answerText = stripAnswerPrefix(stripMarker(aLine, '!!'));
+          if (answerText) {
+            correctIndex = answers.length;
+            answers.push(answerText);
+          }
+        } else if (isTFWrongTrailing(aLine)) {
+          hadTfFalseMarker = true;
+          const answerText = stripAnswerPrefix(stripMarker(aLine, '!'));
+          if (answerText) answers.push(answerText);
         } else {
-          answers.push(aLine);
+          const answerText = stripAnswerPrefix(aLine);
+          if (answerText) answers.push(answerText);
         }
         i++;
       }
 
-      if (questionText && answers.length > 0) {
-        if (correctIndex === -1) correctIndex = 0;
-        questions.push({
-          type: 'mc',
-          question: questionText,
-          answers,
-          correctIndex,
-          id: generateId(),
-          sourceNumber: parsedQuestion.number
-        });
+      // If it has no answers, treat it as normal text and skip it.
+      if (!questionText || answers.length === 0) {
+        continue;
       }
+
+      if (correctIndex === -1) correctIndex = 0;
+      const type =
+        hasTfMarkerPair(
+          answers,
+          hadTfTrueMarker,
+          hadTfFalseMarker,
+          hadEqMarker,
+          hadNeMarker
+        ) || isTrueFalsePair(answers)
+          ? 'tf'
+          : 'mc';
+
+      questions.push({
+        type,
+        question: questionText,
+        answers,
+        correctIndex,
+        id: generateId(),
+        sourceNumber: parsedQuestion.number
+      });
       continue;
     }
 
-    // ── TF Question ───────────────────────────────────
-    if (isTFQuestion(line)) {
-      let rawText = line;
-      let isForcedTrue = false;
-      let isForcedFalse = false;
-
-      // Detect !! (True) first
-      if (/\S\s*!!\s*$/.test(line)) {
-        isForcedTrue = true;
-        rawText = line.replace(/\s*!!\s*$/, '').trim();
-      } 
-      // Detect ! (False) second
-      else if (/\S\s*!\s*$/.test(line)) {
-        isForcedFalse = true;
-        rawText = line.replace(/\s*!\s*$/, '').trim();
-      }
-      // Else handle original *
-      else {
-        rawText = stripMarker(line, '*');
-      }
-      
+    // ── MCQ Question ──────────────────────────────────
+    if (isMCQuestion(line)) {
+      const rawText = line; // Keep markers like ##
       const parsedQuestion = extractLeadingNumber(rawText);
       const questionText = parsedQuestion.text;
       i++;
@@ -295,9 +627,68 @@ function parseQuestions(text) {
         if (isMCQuestion(aLine) || isTFQuestion(aLine)) break;
         if (isAnnotationLine(aLine)) { i++; continue; }
 
-        if (isTFCorrect(aLine)) {
-          const answerText = stripMarker(aLine, '**');
-          if (answerText) { correctIndex = answers.length; answers.push(answerText); }
+        // Determine if it's a correct answer using available markers
+        if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isMCCorrectTrailingHash(aLine)) {
+          correctIndex = answers.length;
+          answers.push(aLine); // Keep markers like # or =
+        } else {
+          answers.push(aLine);
+        }
+        i++;
+      }
+
+      if (questionText && answers.length > 0) {
+        if (correctIndex === -1) correctIndex = 0;
+        const qType =
+          answers.length === 2 && isTrueFalsePair(answers) ? 'tf' : 'mc';
+        questions.push({
+          type: qType,
+          question: questionText,
+          answers,
+          correctIndex,
+          id: generateId(),
+          sourceNumber: parsedQuestion.number
+        });
+      }
+      continue;
+    }
+
+    // ── TF Question ───────────────────────────────────
+    if (isTFQuestion(line)) {
+      let rawText = line; // Keep markers like ! or !! or *
+      let isForcedTrue = false;
+      let isForcedFalse = false;
+
+      // Detect !! (True) first
+      if (/\S\s*!!\s*$/.test(line)) {
+        isForcedTrue = true;
+      } 
+      // Detect ! (False) second
+      else if (/\S\s*!\s*$/.test(line)) {
+        isForcedFalse = true;
+      }
+      
+      const parsedQuestion = extractLeadingNumber(rawText);
+      const questionText = parsedQuestion.text;
+      i++;
+      const answers = [];
+      let correctIndex = -1;
+
+      while (i < lines.length) {
+        const aLine = lines[i];
+
+        if (!aLine) {
+          if (shouldStop(i + 1)) { i++; break; }
+          i++; continue;
+        }
+
+        if (isMCQuestion(aLine) || isTFQuestion(aLine) || isNumberedQuestionStart(aLine)) break;
+        if (isAnnotationLine(aLine)) { i++; continue; }
+
+        // Determine if it's a correct answer using available markers
+        if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isTFCorrectTrailing(aLine)) {
+          correctIndex = answers.length;
+          answers.push(aLine); // Keep markers like !! or =
         } else {
           answers.push(aLine);
         }
@@ -310,13 +701,12 @@ function parseQuestions(text) {
         answers.push('False');
         if (isForcedTrue) correctIndex = 0;
         else if (isForcedFalse) correctIndex = 1;
-        else correctIndex = 0; // Default to True if only *
+        else correctIndex = 0; 
       } else {
-        // If answers provided, use forced logic only if no ** marker found
         if (correctIndex === -1) {
           if (isForcedTrue) correctIndex = 0;
           else if (isForcedFalse) correctIndex = 1;
-          else correctIndex = 0; // Default
+          else correctIndex = 0;
         }
       }
 
@@ -865,6 +1255,43 @@ document.getElementById('successModal').addEventListener('click', function(e) {
   if (e.target === this) closeSuccessModal();
 });
 
+function initGroqUploadUi() {
+  const cb = document.getElementById('useGroqCheckbox');
+  const inp = document.getElementById('groqApiKeyInput');
+  const btn = document.getElementById('saveGroqKeyBtn');
+  if (!cb || !inp || !btn) return;
+
+  if (localStorage.getItem(USE_GROQ_UPLOAD_KEY) === null && DEFAULT_GROQ_API_KEY) {
+    localStorage.setItem(USE_GROQ_UPLOAD_KEY, '1');
+  }
+  cb.checked = localStorage.getItem(USE_GROQ_UPLOAD_KEY) === '1';
+
+  const savedOverride = localStorage.getItem(GROQ_API_KEY_STORAGE_KEY);
+  const hasEmbedded = !!String(DEFAULT_GROQ_API_KEY || '').trim();
+  inp.placeholder = savedOverride
+    ? 'مفتاح محفوظ في المتصفح — الصق مفتاحاً جديداً للاستبدال'
+    : hasEmbedded
+      ? 'يُستخدم المفتاح المضمّن في الكود — الصق مفتاحاً ليُحفظ في المتصفح'
+      : 'مفتاح Groq (يبدأ عادة بـ gsk_)';
+
+  cb.addEventListener('change', () => {
+    localStorage.setItem(USE_GROQ_UPLOAD_KEY, cb.checked ? '1' : '0');
+  });
+
+  btn.addEventListener('click', () => {
+    const v = inp.value.trim();
+    if (!v) {
+      showToast('الصق المفتاح أولاً', 'error');
+      return;
+    }
+    localStorage.setItem(GROQ_API_KEY_STORAGE_KEY, v);
+    inp.value = '';
+    inp.placeholder = 'مفتاح محفوظ في المتصفح — الصق مفتاحاً جديداً للاستبدال';
+    showToast('تم حفظ المفتاح في المتصفح (يستبدل المضمّن في الكود)', 'success');
+  });
+}
+
 document.addEventListener('DOMContentLoaded', restoreActiveExamQuestions);
 document.addEventListener('DOMContentLoaded', toggleScrollTopButton);
+document.addEventListener('DOMContentLoaded', initGroqUploadUi);
 window.addEventListener('scroll', toggleScrollTopButton);

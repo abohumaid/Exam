@@ -60,18 +60,27 @@ function loadQuestionsFromStorage() {
   }
 }
 
+function stripAllMarkers(text) {
+  if (!text) return '';
+  // Remove leading/trailing markers like #, ##, =, !=, *, **, !, !!
+  return text
+    .replace(/^(=|!=|#|##|\*|\*\*|!|!!)\s*/, '')
+    .replace(/\s*(=|!=|#|##|\*|\*\*|!|!!)$/, '')
+    .trim();
+}
+
 function buildDisplayedQuestions(sourceQuestions) {
   return shuffleArray(sourceQuestions).map((question) => {
     const options = question.answers.map((answer, index) => ({
       id: `${question.id}-${index}`,
-      text: answer,
+      text: stripAllMarkers(answer), // Strip markers for exam
       isCorrect: index === question.correctIndex,
     }));
 
     return {
       id: question.id,
       type: question.type,
-      text: question.question,
+      text: stripAllMarkers(question.text), // Strip markers for exam
       options: shuffleArray(options),
     };
   });
