@@ -80,7 +80,7 @@ function buildDisplayedQuestions(sourceQuestions) {
     return {
       id: question.id,
       type: question.type,
-      text: stripAllMarkers(question.text), // Strip markers for exam
+      text: stripAllMarkers(question.question), // Strip markers for exam
       options: shuffleArray(options),
     };
   });

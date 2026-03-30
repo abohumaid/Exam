@@ -80,11 +80,11 @@
     .option-label {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px; /* Reduced gap */
       background: var(--bg-card);
       border: 1px solid var(--border);
       border-radius: var(--border-radius-sm);
-      padding: 10px 15px; /* Reduced padding */
+      padding: 8px 12px; /* Reduced padding */
       cursor: pointer;
       transition: background 0.1s ease, border-color 0.1s ease, transform 0.1s ease; /* Faster transitions */
       font-size: 0.95rem; 
@@ -119,10 +119,7 @@
     }
     .option-label input[type="radio"],
     .option-label input[type="checkbox"] {
-      accent-color: var(--primary);
-      width: 18px;
-      height: 18px;
-      flex-shrink: 0;
+      display: none; /* Hide the white checkbox/radio as requested */
     }
     .option-letter {
       width: 30px;
