@@ -95,8 +95,28 @@ body {
 }
 
 /* ============================================
-   LANDING PAGE
+   ADMIN PANEL CONTEXT TWEAKS
 ============================================ */
+body.admin-mode .bg-particles {
+  display: none; /* Hide particles when admin panel is active */
+}
+
+/* Faster feedback for admin actions */
+.filter-tab,
+.icon-btn,
+.btn {
+  transition: background 0.1s ease, border-color 0.1s ease, transform 0.1s ease, color 0.1s ease;
+}
+
+.filter-tab:active,
+.icon-btn:active,
+.btn:active {
+  transform: scale(0.97);
+}
+
+.question-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
 .landing-page {
   display: flex;
   justify-content: center;
@@ -774,7 +794,8 @@ code {
   color: var(--text-primary);
   line-height: 1.4;
   margin: 0;
-  /* Allow full display */
+  flex: 1; /* Take full available width */
+  min-width: 0; /* Prevent flex shrink issues */
   display: block;
   overflow: visible;
 }
@@ -816,8 +837,8 @@ code {
 .answer-item {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 10px 16px; /* Slightly increased for readability when multi-line */
+  gap: 10px; /* Reduced from 12px */
+  padding: 6px 12px; /* Reduced from 10px 16px */
   border-radius: var(--border-radius-sm);
   border: 1px solid var(--border);
   background: var(--bg-card);
@@ -845,17 +866,18 @@ code {
 }
 
 .answer-marker {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: 2px solid var(--border);
+  width: 22px; /* Reduced from 26px */
+  height: 22px; /* Reduced from 26px */
+  border-radius: 4px; /* Changed from 50% to square-ish */
+  border: 1px solid var(--border); /* Thinner border */
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.75rem;
+  font-size: 0.7rem; /* Smaller font */
   font-weight: 700;
   flex-shrink: 0;
   color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.03); /* Subtle background instead of white */
 }
 
 .answer-item.correct .answer-marker {

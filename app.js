@@ -114,17 +114,23 @@ function extractJsonArrayFromAssistantText(text) {
   return trimmed;
 }
 
+function cleanText(text) {
+  if (!text) return '';
+  // Replace multiple spaces and newlines with a single space
+  return String(text).replace(/\s+/g, ' ').trim();
+}
+
 function normalizeGroqQuestions(raw) {
   if (!Array.isArray(raw)) return [];
   const out = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
     const type = item.type === 'tf' ? 'tf' : 'mc';
-    let question = String(item.question || '').trim();
+    let question = cleanText(item.question || '');
     question = question.replace(/\s*##\s*$/, '').replace(/\s*\*+\s*$/, '').trim();
     if (!question) continue;
     let answers = Array.isArray(item.answers)
-      ? item.answers.map((a) => String(a).trim()).filter(Boolean)
+      ? item.answers.map((a) => cleanText(a)).filter(Boolean)
       : [];
     if (answers.length < 2) continue;
     let correctIndex = Number(item.correctIndex);
@@ -134,7 +140,7 @@ function normalizeGroqQuestions(raw) {
       correctIndex >= answers.length
     ) {
       if (item.correctAnswer != null && item.correctAnswer !== '') {
-        const want = String(item.correctAnswer).trim();
+        const want = cleanText(item.correctAnswer);
         const found = answers.findIndex((a) => a === want);
         correctIndex = found >= 0 ? found : 0;
       } else {
@@ -147,7 +153,7 @@ function normalizeGroqQuestions(raw) {
       answers,
       correctIndex,
       id: generateId(),
-      sourceNumber: String(out.length + 1)
+      sourceNumber: item.sourceNumber || null
     });
   }
   return out;
@@ -507,7 +513,7 @@ function parseQuestions(text) {
     // ── Numbered Question (fallback without markers) ──
     if (isNumberedQuestionStart(line) && !isMCQuestion(line) && !isTFQuestion(line)) {
       const parsedQuestion = extractLeadingNumber(line);
-      const questionText = parsedQuestion.text;
+      const questionText = cleanText(parsedQuestion.text);
       i++;
 
       const answers = [];
@@ -533,19 +539,19 @@ function parseQuestions(text) {
           hadTfFalseMarker = true;
           hadNeMarker = true;
           const answerText = stripTFWrongAnswerText(aLine);
-          if (answerText) answers.push(answerText);
+          if (answerText) answers.push(cleanText(answerText));
         } else if (isTrailingNotEqualsWrong(aLine)) {
           hadTfFalseMarker = true;
           hadNeMarker = true;
           const answerText = stripTFWrongAnswerText(aLine);
-          if (answerText) answers.push(answerText);
+          if (answerText) answers.push(cleanText(answerText));
         } else if (isLeadingEqualsCorrect(aLine)) {
           hadTfTrueMarker = true;
           hadEqMarker = true;
           const answerText = stripMCCorrectAnswerText(aLine);
           if (answerText) {
             correctIndex = answers.length;
-            answers.push(answerText);
+            answers.push(cleanText(answerText));
           }
         } else if (isTrailingEqualsCorrect(aLine)) {
           hadTfTrueMarker = true;
@@ -553,28 +559,28 @@ function parseQuestions(text) {
           const answerText = stripMCCorrectAnswerText(aLine);
           if (answerText) {
             correctIndex = answers.length;
-            answers.push(answerText);
+            answers.push(cleanText(answerText));
           }
         } else if (isMCCorrectTrailingHash(aLine)) {
           const answerText = stripAnswerPrefix(stripMarker(aLine, '#'));
           if (answerText) {
             correctIndex = answers.length;
-            answers.push(answerText);
+            answers.push(cleanText(answerText));
           }
         } else if (isTFCorrectTrailing(aLine)) {
           hadTfTrueMarker = true;
           const answerText = stripAnswerPrefix(stripMarker(aLine, '!!'));
           if (answerText) {
             correctIndex = answers.length;
-            answers.push(answerText);
+            answers.push(cleanText(answerText));
           }
         } else if (isTFWrongTrailing(aLine)) {
           hadTfFalseMarker = true;
           const answerText = stripAnswerPrefix(stripMarker(aLine, '!'));
-          if (answerText) answers.push(answerText);
+          if (answerText) answers.push(cleanText(answerText));
         } else {
           const answerText = stripAnswerPrefix(aLine);
-          if (answerText) answers.push(answerText);
+          if (answerText) answers.push(cleanText(answerText));
         }
         i++;
       }
@@ -611,7 +617,7 @@ function parseQuestions(text) {
     if (isMCQuestion(line)) {
       const rawText = line; // Keep markers like ##
       const parsedQuestion = extractLeadingNumber(rawText);
-      const questionText = parsedQuestion.text;
+      const questionText = cleanText(parsedQuestion.text);
       i++;
       const answers = [];
       let correctIndex = -1;
@@ -630,9 +636,9 @@ function parseQuestions(text) {
         // Determine if it's a correct answer using available markers
         if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isMCCorrectTrailingHash(aLine)) {
           correctIndex = answers.length;
-          answers.push(aLine); // Keep markers like # or =
+          answers.push(cleanText(aLine)); // Keep markers like # or =
         } else {
-          answers.push(aLine);
+          answers.push(cleanText(aLine));
         }
         i++;
       }
@@ -669,7 +675,7 @@ function parseQuestions(text) {
       }
       
       const parsedQuestion = extractLeadingNumber(rawText);
-      const questionText = parsedQuestion.text;
+      const questionText = cleanText(parsedQuestion.text);
       i++;
       const answers = [];
       let correctIndex = -1;
@@ -688,9 +694,9 @@ function parseQuestions(text) {
         // Determine if it's a correct answer using available markers
         if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isTFCorrectTrailing(aLine)) {
           correctIndex = answers.length;
-          answers.push(aLine); // Keep markers like !! or =
+          answers.push(cleanText(aLine)); // Keep markers like !! or =
         } else {
-          answers.push(aLine);
+          answers.push(cleanText(aLine));
         }
         i++;
       }

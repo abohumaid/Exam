@@ -71,12 +71,14 @@ function showLandingPage() {
   landingPage.style.display = 'flex';
   adminPanel.style.display = 'none';
   adminPasswordModal.style.display = 'none';
+  document.body.classList.remove('admin-mode');
 }
 
 function showAdminPanel() {
   landingPage.style.display = 'none';
   adminPanel.style.display = 'block';
   adminPasswordModal.style.display = 'none';
+  document.body.classList.add('admin-mode');
 }
 
 function openAdminPasswordModal() {
