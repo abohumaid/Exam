@@ -177,23 +177,39 @@
             </div>
             <h2 class="upload-title">ارفع ملف Word الخاص بك</h2>
             <p class="upload-desc">يدعم ملفات .docx التي تحتوي على أسئلة الاختبار</p>
-            <button class="btn btn-primary" id="uploadBtn" onclick="document.getElementById('fileInput').click()">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
-                <polyline points="17 8 12 3 7 8"/>
-                <line x1="12" y1="3" x2="12" y2="15"/>
-              </svg>
-              اختر ملف .docx
-            </button>
+            <div class="upload-action-buttons">
+              <button class="btn btn-primary" id="uploadBtn" onclick="startFilePicker(false, false)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                اختر ملف .docx
+              </button>
+              <button class="btn btn-ghost" id="uploadBtnAppend" onclick="startFilePicker(false, true)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+                إضافة أسئلة على الموجود
+              </button>
+              <button class="btn btn-ghost" id="uploadBtnNoAi" onclick="startFilePicker(true, false)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="4" y1="4" x2="20" y2="20"/>
+                  <path d="M12 3v6m0 0l-2.5-2.5M12 9l2.5-2.5"/>
+                  <path d="M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"/>
+                </svg>
+                رفع الملف بدون ذكاء اصطناعي
+              </button>
+            </div>
             <input type="file" id="fileInput" accept=".docx" style="display:none;" onchange="handleFileUpload(event)" />
             <div class="upload-hints">
               <div class="hint-item">
                 <span class="hint-badge mc">MCQ</span>
-                <span>الاختياري: يمكن استخدام <code>##</code> في نهاية السؤال (اختياري). الإجابة الصحيحة: <code>#</code> في النهاية، أو <code>=</code> في بداية أو نهاية السطر. مع تفعيل Groq يُستخرج السؤال من السياق حتى بدون <code>##</code>.</span>
+                <span>الاختياري: الإجابة الصحيحة تكون بعلامة <code>=</code> في نهاية سطر الإجابة.</span>
               </div>
               <div class="hint-item">
                 <span class="hint-badge tf">T/F</span>
-                <span>صح/غلط: السؤال قد ينتهي بـ <code>**</code> أو <code>*</code> — الإجابة الصحيحة <code>=</code> أو <code>!!</code> في النهاية، والخاطئة <code>!=</code> أو <code>!</code> (في بداية أو نهاية السطر)</span>
+                <span>صح/غلط: السطر الصحيح ينتهي بـ <code>=</code>، والسطر الخاطئ ينتهي بـ <code>!=</code>.</span>
               </div>
             </div>
             <div class="groq-upload-panel">
@@ -207,6 +223,27 @@
                 <button type="button" class="btn btn-ghost" id="saveGroqKeyBtn">حفظ المفتاح</button>
               </div>
               <p class="groq-upload-note">مفتاح افتراضي مضمّن في الكود؛ إن لصقت مفتاحاً وحفظته يُستخدم من المتصفح بدلاً منه. لا تنشر الصفحة علناً لأن المفتاح يظهر في المصدر.</p>
+            </div>
+            <div class="manual-input-panel">
+              <p class="manual-input-title">إدخال الأسئلة يدويًا</p>
+              <textarea
+                id="manualQuestionsInput"
+                class="form-textarea manual-questions-input"
+                dir="rtl"
+                placeholder="اكتب أو الصق الأسئلة والإجابات هنا.
+مثال اختياري:
+1) ما هي عاصمة مصر؟
+A) القاهرة =
+B) الإسكندرية
+
+مثال صح/غلط:
+2) الماء يغلي عند 100 درجة =
+"
+              ></textarea>
+              <div class="manual-input-actions">
+                <button type="button" class="btn btn-ghost" onclick="importManualQuestions(false)">تحليل النص واستبدال الحالي</button>
+                <button type="button" class="btn btn-primary" onclick="importManualQuestions(true)">تحليل النص وإضافة على الموجود</button>
+              </div>
             </div>
           </div>
         </div>
@@ -295,17 +332,17 @@
     </div>
   </div>
 
-  <script src="script.js"></script>
-</body>
-</html>
-  <!-- Toast Notification -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <!-- Scripts -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
-  <!-- Firebase Compat SDK (Realtime Database) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+  <script>
+    // Initialize PDF.js worker
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.worker.min.js';
+  </script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="script.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

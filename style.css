@@ -400,6 +400,17 @@ body.admin-mode .bg-particles {
   font-size: 0.95rem;
 }
 
+.upload-action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.upload-action-buttons .btn {
+  width: 100%;
+  justify-content: center;
+}
+
 .upload-hints {
   margin-top: 32px;
   display: flex;
@@ -478,6 +489,39 @@ body.admin-mode .bg-particles {
   color: var(--text-muted);
   margin-top: 6px;
   line-height: 1.5;
+}
+
+.manual-input-panel {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.manual-input-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.manual-questions-input {
+  min-height: 180px;
+  direction: rtl;
+  text-align: right;
+}
+
+.manual-input-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.manual-input-actions .btn {
+  flex: 1;
+  min-width: 200px;
+  justify-content: center;
 }
 
 code {
@@ -1374,6 +1418,7 @@ code {
   .logo-text h1 { font-size: 0.95rem; }
   .scroll-top-btn { right: 16px; bottom: 16px; width: 42px; height: 42px; }
   .header-stats { width: 100%; justify-content: center; }
+  .manual-input-actions .btn { min-width: 100%; }
 }
 
 @media (max-width: 480px) {

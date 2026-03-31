@@ -34,10 +34,13 @@ let editingIndex = null;    // which question is being edited
 let currentFilter = 'all';  // current filter tab
 let isNavbarCollapsed = false;
 const ACTIVE_EXAM_STORAGE_KEY = 'active-exam-questions';
+const ACTIVE_FIREBASE_EXAM_KEY_STORAGE_KEY = 'active-firebase-exam-key';
 const GROQ_API_KEY_STORAGE_KEY = 'groq-api-key';
 const USE_GROQ_UPLOAD_KEY = 'use-groq-upload';
 const GROQ_CHAT_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL = 'llama-3.3-70b-versatile';
+let firebaseAutoSyncInProgress = false;
+let firebaseAutoSyncPending = false;
 
 /** مفتاح Groq الافتراضي. أي مفتاح تُدخله وتضغط «حفظ» يُخزَّن في المتصفح ويستبدل هذا. لا تنشر المشروع علناً — المفتاح يظهر في المصدر. */
 const DEFAULT_GROQ_API_KEY =
@@ -71,11 +74,144 @@ function restoreActiveExamQuestions() {
     if (!savedQuestions) return;
     const parsedQuestions = JSON.parse(savedQuestions);
     if (!Array.isArray(parsedQuestions) || parsedQuestions.length === 0) return;
-    allQuestions = parsedQuestions;
+    allQuestions = normalizeQuestionsForDisplay(parsedQuestions);
+    persistActiveExamQuestions();
     renderQuestionsSection();
   } catch (error) {
     console.error('Failed to restore persisted questions:', error);
   }
+}
+
+function normalizeQuestionsForDisplay(questions) {
+  if (!Array.isArray(questions)) return [];
+  return questions.map((question) => {
+    if (!question || typeof question !== 'object') return question;
+    if (question.type !== 'tf') return question;
+    const normalized = canonicalizeTFAnswers(question.answers, question.correctIndex);
+    return {
+      ...question,
+      answers: normalized.answers,
+      correctIndex: normalized.correctIndex
+    };
+  });
+}
+
+function getActiveFirebaseExamKey() {
+  try {
+    const key = localStorage.getItem(ACTIVE_FIREBASE_EXAM_KEY_STORAGE_KEY);
+    return key ? String(key).trim() : '';
+  } catch (error) {
+    console.error('Failed to read active Firebase exam key:', error);
+    return '';
+  }
+}
+
+function setActiveFirebaseExamKey(key) {
+  try {
+    const cleaned = String(key || '').trim();
+    if (!cleaned) {
+      localStorage.removeItem(ACTIVE_FIREBASE_EXAM_KEY_STORAGE_KEY);
+      return;
+    }
+    localStorage.setItem(ACTIVE_FIREBASE_EXAM_KEY_STORAGE_KEY, cleaned);
+  } catch (error) {
+    console.error('Failed to persist active Firebase exam key:', error);
+  }
+}
+
+function clearActiveFirebaseExamKey() {
+  try {
+    localStorage.removeItem(ACTIVE_FIREBASE_EXAM_KEY_STORAGE_KEY);
+  } catch (error) {
+    console.error('Failed to clear active Firebase exam key:', error);
+  }
+}
+
+function withTimeout(promise, timeoutMs = 15000) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timeoutId);
+        resolve(value);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      });
+  });
+}
+
+function buildExamDataSnapshot() {
+  return {
+    savedAt: new Date().toISOString(),
+    totalQuestions: allQuestions.length,
+    mcCount: allQuestions.filter((q) => q.type === 'mc').length,
+    tfCount: allQuestions.filter((q) => q.type === 'tf').length,
+    questions: allQuestions.map((q) => ({
+      id: q.id,
+      type: q.type,
+      question: q.question,
+      answers: q.answers,
+      correctIndex: q.correctIndex,
+      correctAnswer: q.answers[q.correctIndex]
+    }))
+  };
+}
+
+function formatFirebaseSyncError(error) {
+  const message = String(error?.message || error || '');
+  if (!message) return 'خطأ غير معروف';
+  if (message === 'timeout') return 'انتهت مهلة الاتصال بقاعدة البيانات';
+  return message;
+}
+
+async function writeExamSnapshotToFirebase(options = {}) {
+  const forceNew = !!options.forceNew;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000;
+  const db = getDB();
+  const examData = buildExamDataSnapshot();
+  const collectionRef = db.ref(FIRESTORE_COLLECTION);
+  let examKey = forceNew ? '' : getActiveFirebaseExamKey();
+  let targetRef = null;
+
+  if (examKey) {
+    targetRef = collectionRef.child(examKey);
+  } else {
+    targetRef = collectionRef.push();
+    examKey = targetRef.key;
+  }
+
+  await withTimeout(targetRef.set(examData), timeoutMs);
+  setActiveFirebaseExamKey(examKey);
+  return { key: examKey, totalQuestions: examData.totalQuestions };
+}
+
+function queueAutoSyncToFirebase(changeLabel = 'التعديل') {
+  const runSync = async () => {
+    if (firebaseAutoSyncInProgress) {
+      firebaseAutoSyncPending = true;
+      return;
+    }
+
+    firebaseAutoSyncInProgress = true;
+    try {
+      do {
+        firebaseAutoSyncPending = false;
+        await writeExamSnapshotToFirebase({ forceNew: false, timeoutMs: 12000 });
+      } while (firebaseAutoSyncPending);
+    } catch (error) {
+      console.error('Auto sync to Firebase failed:', error);
+      showToast(
+        `تم ${changeLabel} محلياً، لكن فشل تحديث قاعدة البيانات: ${formatFirebaseSyncError(error)}`,
+        'warning'
+      );
+    } finally {
+      firebaseAutoSyncInProgress = false;
+    }
+  };
+
+  runSync();
 }
 
 // ============================================
@@ -83,6 +219,14 @@ function restoreActiveExamQuestions() {
 // ============================================
 const uploadArea = document.getElementById('uploadArea');
 const fileInput  = document.getElementById('fileInput');
+let nextUploadForceNoAi = false;
+let nextUploadAppendMode = false;
+
+window.startFilePicker = (withoutAI = false, appendMode = false) => {
+  nextUploadForceNoAi = !!withoutAI;
+  nextUploadAppendMode = !!appendMode;
+  fileInput.click();
+};
 
 uploadArea.addEventListener('dragover',  e => { e.preventDefault(); uploadArea.classList.add('drag-over'); });
 uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('drag-over'));
@@ -100,8 +244,37 @@ uploadArea.addEventListener('drop', e => {
 window.handleFileUpload = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
-  processFile(file);
+  const forceNoAI = nextUploadForceNoAi;
+  const appendMode = nextUploadAppendMode;
+  nextUploadForceNoAi = false;
+  nextUploadAppendMode = false;
+  processFile(file, { forceNoAI, appendMode });
   fileInput.value = '';
+};
+
+window.importManualQuestions = async (appendMode = true) => {
+  const input = document.getElementById('manualQuestionsInput');
+  if (!input) return;
+  const rawText = String(input.value || '').trim();
+  if (!rawText) {
+    showToast('اكتب الأسئلة والإجابات أولاً داخل مربع النص', 'error');
+    return;
+  }
+
+  showLoading('جاري تحليل النص المدخل...');
+  try {
+    const result = await processRawTextImport(rawText, {
+      forceNoAI: true,
+      appendMode: !!appendMode,
+      sourceLabel: 'النص المدخل'
+    });
+    if (result?.ok) input.value = '';
+  } catch (error) {
+    clearImportProgressBanner();
+    hideLoading();
+    showToast('حدث خطأ أثناء تحليل النص: ' + (error.message || String(error)), 'error');
+    console.error(error);
+  }
 };
 
 function extractJsonArrayFromAssistantText(text) {
@@ -118,6 +291,26 @@ function cleanText(text) {
   if (!text) return '';
   // Replace multiple spaces and newlines with a single space
   return String(text).replace(/\s+/g, ' ').trim();
+}
+
+function normalizeArabicDigits(text) {
+  return String(text || '')
+    .replace(/[٠-٩]/g, (digit) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(digit)))
+    .replace(/[۰-۹]/g, (digit) => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(digit)));
+}
+
+function joinTextParts(parts) {
+  return cleanText((Array.isArray(parts) ? parts : []).filter(Boolean).join(' '));
+}
+
+function isGroqRateLimitError(error) {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('rate limit') ||
+    message.includes('limit reached') ||
+    message.includes('http 429') ||
+    message.includes('rate_limit')
+  );
 }
 
 function normalizeGroqQuestions(raw) {
@@ -159,13 +352,337 @@ function normalizeGroqQuestions(raw) {
   return out;
 }
 
+function splitTextIntoGroqChunks(rawText, maxChars = 4500, overlapChars = 700) {
+  const normalizedText = String(rawText || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim();
+
+  if (!normalizedText) return [];
+  if (normalizedText.length <= maxChars) return [normalizedText];
+
+  const chunks = [];
+  let start = 0;
+
+  while (start < normalizedText.length) {
+    let end = Math.min(start + maxChars, normalizedText.length);
+
+    if (end < normalizedText.length) {
+      const windowText = normalizedText.slice(start, end);
+      const breakPatterns = ['\n\n', '\n', '؟ ', '? ', '. '];
+
+      for (const pattern of breakPatterns) {
+        const lastIndex = windowText.lastIndexOf(pattern);
+        if (lastIndex > maxChars * 0.6) {
+          end = start + lastIndex + pattern.length;
+          break;
+        }
+      }
+    }
+
+    const chunk = normalizedText.slice(start, end).trim();
+    if (chunk) chunks.push(chunk);
+    if (end >= normalizedText.length) break;
+
+    const nextStart = Math.max(0, end - overlapChars);
+    start = nextStart > start ? nextStart : end;
+  }
+
+  return chunks;
+}
+
+function buildQuestionFingerprint(question) {
+  if (!question || typeof question !== 'object') return '';
+
+  const normalizePart = (value) =>
+    cleanText(String(value || ''))
+      .toLowerCase()
+      .replace(/[^\w\u0600-\u06FF\s]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  return [
+    question.type === 'tf' ? 'tf' : 'mc',
+    normalizePart(question.question),
+    ...(Array.isArray(question.answers) ? question.answers.map(normalizePart) : [])
+  ].join(' || ');
+}
+
+function dedupeQuestions(questions) {
+  const seen = new Set();
+  const uniqueQuestions = [];
+
+  for (const question of questions) {
+    const fingerprint = buildQuestionFingerprint(question);
+    if (!fingerprint || seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    uniqueQuestions.push(question);
+  }
+
+  return uniqueQuestions;
+}
+
+function hasSavedGroqApiKey() {
+  const saved = localStorage.getItem(GROQ_API_KEY_STORAGE_KEY);
+  return !!(saved && String(saved).trim());
+}
+
+function normalizeParsingLine(text) {
+  try {
+    return String(text || '').normalize('NFKC');
+  } catch (error) {
+    return String(text || '');
+  }
+}
+
+function isOptionPrefixedAnswer(line) {
+  const text = normalizeParsingLine(line).trim();
+  if (!text) return false;
+
+  if (/^\s*(?:\(?[A-Za-z]\)|[A-Za-z][\)\.\-:]|\(?[أ-ي]\)|[أ-ي][\)\.\-:])\s*\S/.test(text)) {
+    return true;
+  }
+
+  if (/^\s*(?:\(?\d+\)|\d+[\)\.\-:\/])\s*\S/.test(normalizeArabicDigits(text))) {
+    return true;
+  }
+
+  return false;
+}
+
+function isUnnumberedMCQuestionStart(line, nextLine = '') {
+  const text = cleanText(normalizeParsingLine(line));
+  const next = cleanText(normalizeParsingLine(nextLine));
+  if (!text || !next || isAnnotationLine(text)) return false;
+  if (isMCQuestion(text) || isTFQuestion(text) || isNumberedQuestionStart(text)) return false;
+  if (isLikelyAnswerLine(text)) return false;
+  if (!/[؟?]\s*$/.test(text)) return false;
+  return isOptionPrefixedAnswer(next);
+}
+
+function isQuestionStartCandidate(line, nextLine = '') {
+  const text = String(line || '').trim();
+  if (!text || isAnnotationLine(text)) return false;
+  if (isMCQuestion(text) || isTFQuestion(text) || isNumberedQuestionStart(text)) return true;
+  if (isUnnumberedMCQuestionStart(text, nextLine)) return true;
+  if (/[؟?]\s*$/.test(text) && isLikelyAnswerLine(nextLine)) return true;
+  return false;
+}
+
+function splitLongTextPreservingLines(text, maxChars = 12000) {
+  const rawLines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const parts = [];
+  let currentLines = [];
+  let currentLength = 0;
+
+  const flush = () => {
+    if (!currentLines.length) return;
+    const value = currentLines.join('\n').trim();
+    if (value) parts.push(value);
+    currentLines = [];
+    currentLength = 0;
+  };
+
+  for (const rawLine of rawLines) {
+    const line = String(rawLine || '').trimEnd();
+    const lineLength = line.length + 1;
+
+    if (currentLines.length && currentLength + lineLength > maxChars) {
+      flush();
+    }
+
+    currentLines.push(line);
+    currentLength += lineLength;
+  }
+
+  flush();
+  return parts;
+}
+
+function buildQuestionBlocks(rawText) {
+  const rawLines = String(rawText || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const blocks = [];
+  let currentBlock = [];
+  let sawQuestionStart = false;
+
+  function nextNonBlankLine(fromIndex) {
+    for (let index = fromIndex; index < rawLines.length; index++) {
+      const value = String(rawLines[index] || '').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
+  for (let index = 0; index < rawLines.length; index++) {
+    const trimmedLine = String(rawLines[index] || '').trim();
+
+    if (!trimmedLine) {
+      if (sawQuestionStart && currentBlock.length) currentBlock.push('');
+      continue;
+    }
+
+    const nextLine = nextNonBlankLine(index + 1);
+    if (isQuestionStartCandidate(trimmedLine, nextLine)) {
+      if (currentBlock.length) {
+        const blockText = currentBlock.join('\n').trim();
+        if (blockText) blocks.push(blockText);
+      }
+      currentBlock = [trimmedLine];
+      sawQuestionStart = true;
+      continue;
+    }
+
+    if (sawQuestionStart) {
+      currentBlock.push(trimmedLine);
+    }
+  }
+
+  if (currentBlock.length) {
+    const blockText = currentBlock.join('\n').trim();
+    if (blockText) blocks.push(blockText);
+  }
+
+  return blocks;
+}
+
+function splitTextIntoUploadBatches(rawText, maxBlocks = 35, maxChars = 12000) {
+  const blocks = buildQuestionBlocks(rawText);
+  const batches = [];
+  let currentBatchBlocks = [];
+  let currentBatchLength = 0;
+
+  function flushBatch() {
+    if (!currentBatchBlocks.length) return;
+    batches.push({
+      text: currentBatchBlocks.join('\n\n').trim(),
+      estimatedQuestions: currentBatchBlocks.length
+    });
+    currentBatchBlocks = [];
+    currentBatchLength = 0;
+  }
+
+  const sourceBlocks = blocks.length
+    ? blocks
+    : splitLongTextPreservingLines(rawText, maxChars);
+
+  for (const originalBlock of sourceBlocks) {
+    const blockParts =
+      originalBlock.length > maxChars
+        ? splitLongTextPreservingLines(originalBlock, maxChars)
+        : [originalBlock];
+
+    for (const blockText of blockParts) {
+      const normalizedBlock = String(blockText || '').trim();
+      if (!normalizedBlock) continue;
+
+      const projectedLength =
+        currentBatchLength + normalizedBlock.length + (currentBatchBlocks.length ? 2 : 0);
+
+      if (
+        currentBatchBlocks.length &&
+        (currentBatchBlocks.length >= maxBlocks || projectedLength > maxChars)
+      ) {
+        flushBatch();
+      }
+
+      currentBatchBlocks.push(normalizedBlock);
+      currentBatchLength += normalizedBlock.length + (currentBatchBlocks.length > 1 ? 2 : 0);
+    }
+  }
+
+  flushBatch();
+
+  if (batches.length === 0) {
+    return [
+      {
+        text: String(rawText || '').trim(),
+        estimatedQuestions: 0
+      }
+    ];
+  }
+
+  return batches;
+}
+
+function ensureImportProgressBanner() {
+  const questionsSection = document.getElementById('questionsSection');
+  if (!questionsSection) return null;
+
+  let banner = document.getElementById('importProgressBanner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'importProgressBanner';
+    banner.style.cssText = [
+      'display:flex',
+      'flex-direction:column',
+      'gap:8px',
+      'padding:16px 18px',
+      'margin-bottom:18px',
+      'border-radius:18px',
+      'background:linear-gradient(135deg, rgba(41,89,255,0.16), rgba(0,188,212,0.12))',
+      'border:1px solid rgba(116,166,255,0.28)',
+      'box-shadow:0 16px 40px rgba(0,0,0,0.16)'
+    ].join(';');
+    banner.innerHTML = `
+      <div id="importProgressTitle" style="font-size:1rem;font-weight:700;color:#f4f8ff"></div>
+      <div id="importProgressMeta" style="font-size:0.92rem;color:#d7e5ff"></div>
+      <div style="width:100%;height:10px;border-radius:999px;background:rgba(255,255,255,0.12);overflow:hidden">
+        <div id="importProgressBar" style="width:0%;height:100%;border-radius:999px;background:linear-gradient(90deg,#5bc0ff,#6ef3c5);transition:width .25s ease"></div>
+      </div>
+    `;
+    questionsSection.prepend(banner);
+  }
+
+  return banner;
+}
+
+function updateImportProgressBanner(currentPart, totalParts, totalQuestions, addedInPart) {
+  const banner = ensureImportProgressBanner();
+  if (!banner) return;
+
+  const safeTotal = Math.max(totalParts || 1, 1);
+  const percentage = Math.min(100, Math.round((currentPart / safeTotal) * 100));
+  const title = document.getElementById('importProgressTitle');
+  const meta = document.getElementById('importProgressMeta');
+  const bar = document.getElementById('importProgressBar');
+
+  if (title) {
+    title.textContent =
+      currentPart >= safeTotal
+        ? 'اكتمل رفع جميع أجزاء الملف'
+        : `جاري رفع الجزء ${currentPart} من ${safeTotal} إلى صفحة الأدمن`;
+  }
+
+  if (meta) {
+    meta.textContent =
+      `تمت إضافة ${totalQuestions} سؤال حتى الآن` +
+      (typeof addedInPart === 'number'
+        ? `، منها ${addedInPart} سؤال في الجزء الحالي`
+        : '');
+  }
+
+  if (bar) {
+    bar.style.width = `${percentage}%`;
+  }
+}
+
+function clearImportProgressBanner(delayMs = 0) {
+  const removeBanner = () => {
+    const banner = document.getElementById('importProgressBanner');
+    if (banner) banner.remove();
+  };
+
+  if (delayMs > 0) {
+    setTimeout(removeBanner, delayMs);
+    return;
+  }
+
+  removeBanner();
+}
+
 async function fetchQuestionsFromGroq(rawText, apiKey) {
-  const maxChars = 14000;
-  const excerpt =
-    rawText.length > maxChars
-      ? rawText.slice(0, maxChars) +
-        '\n\n[... تم اقتصار النص لحدود الطلب — راجع الملف أو قسّمه إذا كان طويلاً جداً]'
-      : rawText;
+  const chunks = splitTextIntoGroqChunks(rawText);
+  if (chunks.length === 0) return [];
 
   const systemPrompt = `أنت محلل أسئلة امتحانات عربية/إنجليزية. استخرج من النص كل الأسئلة وصنّفها بدقة.
 
@@ -190,105 +707,247 @@ async function fetchQuestionsFromGroq(rawText, apiKey) {
 - correctIndex: مؤشر الإجابة الصحيحة (0-based).
 إذا لم توجد أسئلة أعد [].`;
 
-  const res = await fetch(GROQ_CHAT_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: GROQ_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: excerpt }
-      ],
-      temperature: 0.2,
-      max_tokens: 8192
-    })
-  });
+  const collectedQuestions = [];
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg =
-      data.error?.message ||
-      data.message ||
-      `HTTP ${res.status}`;
-    throw new Error(msg);
+  for (let index = 0; index < chunks.length; index++) {
+    if (chunks.length > 1) {
+      setLoadingText(
+        `جاري استخراج الأسئلة عبر الذكاء الاصطناعي (Groq)... الجزء ${index + 1} من ${chunks.length}`
+      );
+    }
+
+    const res = await fetch(GROQ_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          {
+            role: 'user',
+            content:
+              `استخرج كل الأسئلة الموجودة في هذا الجزء فقط من الملف، ولا تتجاهل أي سؤال واضح.\n` +
+              `الجزء ${index + 1} من ${chunks.length}:\n\n${chunks[index]}`
+          }
+        ],
+        temperature: 0.2,
+        max_tokens: 2400
+      })
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        data.error?.message ||
+        data.message ||
+        `HTTP ${res.status}`;
+      throw new Error(msg);
+    }
+
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) throw new Error('لا يوجد رد من النموذج');
+
+    const jsonStr = extractJsonArrayFromAssistantText(content);
+    const parsed = JSON.parse(jsonStr);
+    collectedQuestions.push(...normalizeGroqQuestions(parsed));
   }
 
-  const content = data.choices?.[0]?.message?.content;
-  if (!content) throw new Error('لا يوجد رد من النموذج');
-
-  const jsonStr = extractJsonArrayFromAssistantText(content);
-  const parsed = JSON.parse(jsonStr);
-  return normalizeGroqQuestions(parsed);
+  return dedupeQuestions(collectedQuestions);
 }
 
-async function processFile(file) {
+async function processRawTextImport(rawText, options = {}) {
+  const forceNoAI = !!options.forceNoAI;
+  const appendMode = !!options.appendMode;
+  const sourceLabel = String(options.sourceLabel || 'المصدر');
+  const previousQuestions = Array.isArray(allQuestions) ? [...allQuestions] : [];
+  const previousFirebaseExamKey = getActiveFirebaseExamKey();
+  let workingQuestions = appendMode ? [...previousQuestions] : [];
+  let groqRateLimited = false;
+  let warnedAboutGroqFailure = false;
+  let hasShownQuestionsSection = false;
+
+  const groqKey = getGroqApiKey();
+  const useGroq = !forceNoAI && localStorage.getItem(USE_GROQ_UPLOAD_KEY) === '1';
+  const allowGroqFallback = !forceNoAI && (useGroq || hasSavedGroqApiKey());
+  const uploadBatches = splitTextIntoUploadBatches(rawText);
+
+  if (!appendMode) {
+    allQuestions = [];
+    currentFilter = 'all';
+    clearActiveExamQuestions();
+    clearActiveFirebaseExamKey();
+  }
+  clearImportProgressBanner();
+
+  if (forceNoAI) {
+    setLoadingText('جاري التحليل المحلي بدون استخدام الذكاء الاصطناعي...');
+  } else if (uploadBatches.length > 1) {
+    setLoadingText(
+      appendMode
+        ? `تم تقسيم ${sourceLabel} إلى ${uploadBatches.length} أجزاء، جاري الإضافة...`
+        : `تم تقسيم ${sourceLabel} إلى ${uploadBatches.length} أجزاء، جاري الرفع...`
+    );
+  } else {
+    setLoadingText(appendMode ? 'جاري إضافة الأسئلة على الموجود...' : 'جاري تحليل الأسئلة...');
+  }
+
+  for (let batchIndex = 0; batchIndex < uploadBatches.length; batchIndex++) {
+    const batch = uploadBatches[batchIndex];
+    let batchQuestions = [];
+
+    setLoadingText(
+      uploadBatches.length > 1
+        ? `جاري تجهيز الجزء ${batchIndex + 1} من ${uploadBatches.length}...`
+        : appendMode
+          ? 'جاري إضافة الأسئلة على الموجود...'
+          : 'جاري تحليل الأسئلة...'
+    );
+
+    if (groqKey && useGroq && !groqRateLimited) {
+      try {
+        batchQuestions = await fetchQuestionsFromGroq(batch.text, groqKey);
+      } catch (groqErr) {
+        groqRateLimited = isGroqRateLimitError(groqErr);
+        if (groqRateLimited) {
+          localStorage.setItem(USE_GROQ_UPLOAD_KEY, '0');
+          const groqCheckbox = document.getElementById('useGroqCheckbox');
+          if (groqCheckbox) groqCheckbox.checked = false;
+        }
+        console.error(groqErr);
+        if (!warnedAboutGroqFailure) {
+          showToast(
+            groqRateLimited
+              ? 'تم تجاوز الحد اليومي لمفتاح Groq الحالي، وسيتم المتابعة بالتحليل المحلي.'
+              : 'تنبيه: فشل Groq، وسيتم المتابعة بالقواعد المحلية.',
+            'warning'
+          );
+          warnedAboutGroqFailure = true;
+        }
+      }
+    }
+
+    if (batchQuestions.length === 0) {
+      batchQuestions = parseQuestions(batch.text);
+    }
+
+    if (batchQuestions.length === 0 && groqKey && allowGroqFallback && !useGroq && !groqRateLimited) {
+      try {
+        batchQuestions = await fetchQuestionsFromGroq(batch.text, groqKey);
+      } catch (groqErr) {
+        groqRateLimited = groqRateLimited || isGroqRateLimitError(groqErr);
+        console.error(groqErr);
+      }
+    }
+
+    const previousCount = workingQuestions.length;
+    workingQuestions = dedupeQuestions([...workingQuestions, ...batchQuestions]);
+    allQuestions = workingQuestions;
+    const addedInPart = workingQuestions.length - previousCount;
+    persistActiveExamQuestions();
+
+    if (!hasShownQuestionsSection) {
+      hideLoading();
+      renderQuestionsSection();
+      hasShownQuestionsSection = true;
+    } else {
+      updateTabCounts();
+      renderQuestionsList();
+    }
+
+    updateImportProgressBanner(
+      batchIndex + 1,
+      uploadBatches.length,
+      workingQuestions.length,
+      addedInPart
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  const totalAdded = workingQuestions.length - (appendMode ? previousQuestions.length : 0);
+
+  if (workingQuestions.length === 0) {
+    clearImportProgressBanner();
+    if (!appendMode && previousQuestions.length > 0) {
+      allQuestions = previousQuestions;
+      persistActiveExamQuestions();
+      setActiveFirebaseExamKey(previousFirebaseExamKey);
+      updateTabCounts();
+      renderQuestionsList();
+    } else if (!appendMode) {
+      clearActiveFirebaseExamKey();
+    }
+    if (!hasShownQuestionsSection) hideLoading();
+    const preview = String(rawText || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    console.warn('No questions found. Extracted text preview:', preview);
+    showToast(
+      forceNoAI
+        ? 'لم يتم العثور على أسئلة بالتحليل المحلي. تأكد من تنسيق العلامات: = للصحيح و != للخطأ.'
+        : groqRateLimited
+          ? 'تعذر استخدام Groq لأن الحد اليومي للمفتاح الحالي انتهى، كما أن التحليل المحلي لم يفهم التنسيق بالكامل.'
+          : 'لم يتم العثور على أسئلة! استخدم تنسيق العلامات: = للإجابة الصحيحة و != للإجابة الخاطئة.',
+      'error'
+    );
+    return { ok: false, added: 0, total: allQuestions.length };
+  }
+
+  if (appendMode && totalAdded <= 0) {
+    clearImportProgressBanner();
+    updateTabCounts();
+    renderQuestionsList();
+    showToast(`لم يتم العثور على أسئلة جديدة لإضافتها من ${sourceLabel}.`, 'warning');
+    return { ok: false, added: 0, total: workingQuestions.length };
+  }
+
+  if (!hasShownQuestionsSection) {
+    hideLoading();
+    renderQuestionsSection();
+  } else {
+    updateTabCounts();
+    renderQuestionsList();
+  }
+
+  updateImportProgressBanner(
+    uploadBatches.length,
+    uploadBatches.length,
+    workingQuestions.length,
+    0
+  );
+
+  showToast(
+    appendMode
+      ? `تمت إضافة ${totalAdded} سؤال على الموجود (الإجمالي الآن ${workingQuestions.length}).`
+      : uploadBatches.length > 1
+        ? `تم رفع ${sourceLabel} بالكامل على ${uploadBatches.length} أجزاء، بعدد ${workingQuestions.length} سؤال.`
+        : forceNoAI
+          ? `تم استخراج ${workingQuestions.length} سؤال بدون استخدام الذكاء الاصطناعي.`
+          : `تم استخراج ${workingQuestions.length} سؤال بنجاح!`,
+    'success'
+  );
+  clearImportProgressBanner(2500);
+  return { ok: true, added: appendMode ? totalAdded : workingQuestions.length, total: workingQuestions.length };
+}
+
+async function processFile(file, options = {}) {
   showLoading('جاري قراءة الملف...');
   try {
     const arrayBuffer = await file.arrayBuffer();
     setLoadingText('جاري استخراج النصوص...');
     const result = await mammoth.extractRawText({ arrayBuffer });
-    setLoadingText('جاري تحليل الأسئلة...');
     const rawText = result.value;
-    let questions = [];
-
-    const groqKey = getGroqApiKey();
-    const useGroq = localStorage.getItem(USE_GROQ_UPLOAD_KEY) === '1';
-
-    if (groqKey && useGroq) {
-      setLoadingText('جاري استخراج الأسئلة عبر الذكاء الاصطناعي (Groq)...');
-      try {
-        const aiQuestions = await fetchQuestionsFromGroq(rawText, groqKey);
-        if (aiQuestions.length > 0) questions = aiQuestions;
-      } catch (groqErr) {
-        console.error(groqErr);
-        showToast(
-          'تنبيه: فشل Groq، يُجرى التحليل بالقواعد. ' +
-            (groqErr.message || String(groqErr)),
-          'warning'
-        );
-      }
-    }
-
-    if (questions.length === 0) {
-      questions = parseQuestions(rawText);
-    }
-
-    if (questions.length === 0 && groqKey && !useGroq) {
-      setLoadingText('جاري استخراج الأسئلة عبر الذكاء الاصطناعي (Groq)...');
-      try {
-        const aiQuestions = await fetchQuestionsFromGroq(rawText, groqKey);
-        if (aiQuestions.length > 0) questions = aiQuestions;
-      } catch (groqErr) {
-        console.error(groqErr);
-      }
-    }
-
-    if (questions.length === 0) {
-      hideLoading();
-      // Show first 300 chars of extracted text to help debug
-      const preview = rawText.replace(/\s+/g, ' ').trim().slice(0, 300);
-      console.warn('No questions found. Extracted text preview:', preview);
-      showToast(
-        'لم يتم العثور على أسئلة! فعّل «استخدم الذكاء الاصطناعي» لالتقاط الأسئلة بدون ##، أو استخدم القواعد: ## / # / = / != في بداية أو نهاية السطر.',
-        'error'
-      );
-      return;
-    }
-    allQuestions = questions;
-    persistActiveExamQuestions();
-    setLoadingText('جاري تجهيز العرض...');
-    setTimeout(() => {
-      hideLoading();
-      renderQuestionsSection();
-      showToast(`تم استخراج ${questions.length} سؤال بنجاح!`, 'success');
-    }, 300);
+    return await processRawTextImport(rawText, {
+      ...options,
+      sourceLabel: file?.name || 'الملف'
+    });
   } catch (err) {
+    clearImportProgressBanner();
     hideLoading();
     showToast('حدث خطأ أثناء قراءة الملف: ' + err.message, 'error');
     console.error(err);
+    return { ok: false, added: 0, total: allQuestions.length };
   }
 }
 
@@ -364,6 +1023,54 @@ function isTFWrongTrailing(line) {
   return /\S\s*!\s*$/.test(line) && !/\S\s*!!\s*$/.test(line);
 }
 
+function hasTfEqMarker(line) {
+  return isTrailingEqualsCorrect(line) || isTrailingNotEqualsWrong(line);
+}
+
+function parseStandaloneTfQuestion(line, nextLine = '') {
+  const sourceLine = String(line || '').trim();
+  if (!sourceLine || !hasTfEqMarker(sourceLine)) return null;
+  if (isOptionPrefixedAnswer(sourceLine) && !isNumberedQuestionStart(sourceLine)) return null;
+  if (isMCQuestion(sourceLine) || isTFQuestion(sourceLine)) return null;
+
+  const stripped = stripTfTrailingEqMarkers(sourceLine).trim();
+  if (!stripped) return null;
+
+  const looksLikeQuestion =
+    isNumberedQuestionStart(stripped) ||
+    /[؟?]\s*$/.test(stripped) ||
+    stripped.length >= 8;
+  if (!looksLikeQuestion) return null;
+
+  const next = String(nextLine || '').trim();
+  const nextLooksLikeStandaloneTf =
+    hasTfEqMarker(next) && !isOptionPrefixedAnswer(next);
+  if (
+    next &&
+    !isNumberedQuestionStart(next) &&
+    !isMCQuestion(next) &&
+    !isTFQuestion(next) &&
+    isLikelyAnswerLine(next) &&
+    !nextLooksLikeStandaloneTf
+  ) {
+    return null;
+  }
+
+  const parsedQuestion = extractLeadingNumber(stripped);
+  const questionText = cleanText(parsedQuestion.text);
+  if (!questionText) return null;
+
+  const correctIndex = isTrailingNotEqualsWrong(sourceLine) ? 1 : 0;
+  return {
+    type: 'tf',
+    question: questionText,
+    answers: ['True', 'False'],
+    correctIndex,
+    id: generateId(),
+    sourceNumber: parsedQuestion.number
+  };
+}
+
 function stripTFCorrectAnswerText(line) {
   const t = String(line).trim();
   if (isLeadingEqualsCorrect(line)) return stripAnswerPrefix(t.replace(/^=\s*/, '').trim());
@@ -387,9 +1094,10 @@ function stripMarker(line, marker) {
 
 // Extract leading question number like "1." "1)" "Q1." etc.
 function extractLeadingNumber(text) {
-  const match = text.match(/^\s*(?:Q\s*)?(\d+)[\.\)]\s*(.*)$/i);
+  const normalizedText = normalizeArabicDigits(text);
+  const match = normalizedText.match(/^\s*(?:Q\s*|س\s*)?(\d+)\s*[\.\)\-\/:]\s*(.*)$/i);
   if (!match) {
-    return { number: null, text: text.trim() };
+    return { number: null, text: String(text || '').trim() };
   }
   return { number: match[1], text: match[2].trim() };
 }
@@ -401,14 +1109,15 @@ function isAnnotationLine(line) {
 
 // Numbered question style: 1. ... / 1) ... / Q1. ...
 function isNumberedQuestionStart(line) {
-  return /^\s*(?:Q\s*)?\d+[\.\)]\s+\S/.test(line);
+  const normalizedLine = normalizeArabicDigits(line);
+  return /^\s*(?:Q\s*|س\s*)?\d+\s*[\.\)\-\/:]\s*\S/.test(normalizedLine);
 }
 
 function stripAnswerPrefix(line) {
   // Remove common option prefixes: A) / A. / a- / 1) / 1. / - / •
-  return line
-    .replace(/^\s*[A-Za-z][\)\.\-:]\s+/, '')
-    .replace(/^\s*\d+[\)\.\-:]\s+/, '')
+  return normalizeParsingLine(line)
+    .replace(/^\s*(?:\(?[A-Za-z]\)|[A-Za-z][\)\.\-:]|\(?[أ-ي]\)|[أ-ي][\)\.\-:])\s*/, '')
+    .replace(/^\s*(?:\(?\d+\)|\d+[\)\.\-:\/])\s*/, '')
     .replace(/^\s*[-•]\s+/, '')
     .trim();
 }
@@ -444,6 +1153,70 @@ function normalizeTfToken(text) {
   return t;
 }
 
+function canonicalizeTFAnswers(answers, correctIndex) {
+  const cleanedAnswers = Array.isArray(answers)
+    ? answers.map((answer) => cleanText(answer)).filter(Boolean)
+    : [];
+
+  const fallbackIndex = Number.isInteger(correctIndex) && correctIndex >= 0 ? correctIndex : 0;
+
+  if (cleanedAnswers.length !== 2) {
+    return {
+      answers: ['True', 'False'],
+      correctIndex: fallbackIndex === 1 ? 1 : 0
+    };
+  }
+
+  const trueTokens = new Set(['true', 'صحيح', 'نعم']);
+  const falseTokens = new Set(['false', 'خطأ', 'لا']);
+  const firstToken = normalizeTfToken(cleanedAnswers[0]);
+  const secondToken = normalizeTfToken(cleanedAnswers[1]);
+
+  const isTrueFalsePair =
+    (trueTokens.has(firstToken) && falseTokens.has(secondToken)) ||
+    (falseTokens.has(firstToken) && trueTokens.has(secondToken));
+
+  if (!isTrueFalsePair) {
+    return {
+      answers: ['True', 'False'],
+      correctIndex: fallbackIndex === 1 ? 1 : 0
+    };
+  }
+
+  const sourceTrueIndex = trueTokens.has(firstToken) ? 0 : 1;
+  const sourceCorrect = fallbackIndex;
+  const correctIsTrue = sourceCorrect === sourceTrueIndex;
+
+  return {
+    answers: ['True', 'False'],
+    correctIndex: correctIsTrue ? 0 : 1
+  };
+}
+
+function isLikelyAnswerLine(line) {
+  const text = normalizeParsingLine(line).trim();
+  if (!text) return false;
+
+  if (
+    isLeadingEqualsCorrect(text) ||
+    isLeadingNotEqualsWrong(text) ||
+    isTrailingEqualsCorrect(text) ||
+    isTrailingNotEqualsWrong(text) ||
+    isMCCorrectTrailingHash(text) ||
+    isTFCorrectTrailing(text) ||
+    isTFWrongTrailing(text)
+  ) {
+    return true;
+  }
+
+  if (isOptionPrefixedAnswer(text)) {
+    return true;
+  }
+
+  const token = normalizeTfToken(text);
+  return ['true', 'false', 'صحيح', 'خطأ', 'نعم', 'لا'].includes(token);
+}
+
 function isTrueFalsePair(answers) {
   if (!Array.isArray(answers) || answers.length !== 2) return false;
   const a = normalizeTfToken(answers[0]);
@@ -474,7 +1247,10 @@ function parseQuestions(text) {
   const questions = [];
 
   // Normalize line endings and split
-  const rawLines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  const normalizedText = normalizeArabicDigits(
+    String(text || '').replace(/\u00A0/g, ' ')
+  );
+  const rawLines = normalizedText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
 
   // Trim each line
   const lines = rawLines.map(l => l.trim());
@@ -500,6 +1276,11 @@ function parseQuestions(text) {
     if (isMCQuestion(lines[next])) return true;        // next question starts
     if (isTFQuestion(lines[next])) return true;        // next TF question starts
     if (isNumberedQuestionStart(lines[next])) return true; // next numbered question starts
+    const nextAfter = nextNonBlank(next + 1);
+    const nextLine = lines[next];
+    const followingLine = nextAfter >= 0 ? lines[nextAfter] : '';
+    if (parseStandaloneTfQuestion(nextLine, followingLine)) return true;
+    if (isUnnumberedMCQuestionStart(nextLine, followingLine)) return true;
     return false;                                      // still an answer line
   }
 
@@ -510,10 +1291,97 @@ function parseQuestions(text) {
     // Skip empty and annotation lines at top level
     if (!line || isAnnotationLine(line)) { i++; continue; }
 
+    // ── Standalone TF Question (question line ends with = or !=) ──
+    const nextLineIndex = nextNonBlank(i + 1);
+    const nextLine = nextLineIndex >= 0 ? lines[nextLineIndex] : '';
+    const standaloneTf = parseStandaloneTfQuestion(line, nextLine);
+    if (standaloneTf) {
+      questions.push(standaloneTf);
+      i++;
+      continue;
+    }
+
+    // ── Unnumbered MCQ (question line + A/B/C/D answers) ──
+    if (isUnnumberedMCQuestionStart(line, nextLine)) {
+      const questionParts = [line];
+      i++;
+
+      const answers = [];
+      let correctIndex = -1;
+
+      while (i < lines.length) {
+        const aLine = lines[i];
+
+        if (!aLine) {
+          if (shouldStop(i + 1)) { i++; break; }
+          i++;
+          continue;
+        }
+
+        const aNextLineIndex = nextNonBlank(i + 1);
+        const aNextLine = aNextLineIndex >= 0 ? lines[aNextLineIndex] : '';
+        if (answers.length > 0 && parseStandaloneTfQuestion(aLine, aNextLine)) break;
+        if (answers.length > 0 && isUnnumberedMCQuestionStart(aLine, aNextLine)) break;
+        if (isMCQuestion(aLine) || isTFQuestion(aLine) || isNumberedQuestionStart(aLine)) break;
+        if (isAnnotationLine(aLine)) { i++; continue; }
+
+        if (answers.length === 0 && !isLikelyAnswerLine(aLine)) {
+          questionParts.push(cleanText(aLine));
+          i++;
+          continue;
+        }
+
+        if (isLeadingNotEqualsWrong(aLine) || isTrailingNotEqualsWrong(aLine)) {
+          const wrongText = stripTFWrongAnswerText(aLine);
+          if (wrongText) answers.push(cleanText(wrongText));
+        } else if (
+          isLeadingEqualsCorrect(aLine) ||
+          isTrailingEqualsCorrect(aLine) ||
+          isMCCorrectTrailingHash(aLine)
+        ) {
+          const correctText = stripMCCorrectAnswerText(aLine);
+          if (correctText) {
+            correctIndex = answers.length;
+            answers.push(cleanText(correctText));
+          }
+        } else {
+          const answerText = stripAnswerPrefix(aLine);
+          if (answerText) {
+            if (answers.length > 0 && !isLikelyAnswerLine(aLine)) {
+              answers[answers.length - 1] = cleanText(
+                `${answers[answers.length - 1]} ${answerText}`
+              );
+            } else {
+              answers.push(cleanText(answerText));
+            }
+          }
+        }
+        i++;
+      }
+
+      const questionText = joinTextParts(questionParts);
+      if (questionText && answers.length > 0) {
+        if (correctIndex === -1) correctIndex = 0;
+        const qType = answers.length === 2 && isTrueFalsePair(answers) ? 'tf' : 'mc';
+        const normalized = qType === 'tf'
+          ? canonicalizeTFAnswers(answers, correctIndex)
+          : { answers, correctIndex };
+        questions.push({
+          type: qType,
+          question: questionText,
+          answers: normalized.answers,
+          correctIndex: normalized.correctIndex,
+          id: generateId(),
+          sourceNumber: null
+        });
+      }
+      continue;
+    }
+
     // ── Numbered Question (fallback without markers) ──
     if (isNumberedQuestionStart(line) && !isMCQuestion(line) && !isTFQuestion(line)) {
       const parsedQuestion = extractLeadingNumber(line);
-      const questionText = cleanText(parsedQuestion.text);
+      const questionParts = [parsedQuestion.text];
       i++;
 
       const answers = [];
@@ -532,8 +1400,18 @@ function parseQuestions(text) {
           continue;
         }
 
+        const aNextLineIndex = nextNonBlank(i + 1);
+        const aNextLine = aNextLineIndex >= 0 ? lines[aNextLineIndex] : '';
+        if (answers.length > 0 && parseStandaloneTfQuestion(aLine, aNextLine)) break;
+        if (answers.length > 0 && isUnnumberedMCQuestionStart(aLine, aNextLine)) break;
         if (isMCQuestion(aLine) || isTFQuestion(aLine) || isNumberedQuestionStart(aLine)) break;
         if (isAnnotationLine(aLine)) { i++; continue; }
+
+        if (answers.length === 0 && !isLikelyAnswerLine(aLine)) {
+          questionParts.push(cleanText(aLine));
+          i++;
+          continue;
+        }
 
         if (isLeadingNotEqualsWrong(aLine)) {
           hadTfFalseMarker = true;
@@ -580,10 +1458,20 @@ function parseQuestions(text) {
           if (answerText) answers.push(cleanText(answerText));
         } else {
           const answerText = stripAnswerPrefix(aLine);
-          if (answerText) answers.push(cleanText(answerText));
+          if (answerText) {
+            if (answers.length > 0 && !isLikelyAnswerLine(aLine)) {
+              answers[answers.length - 1] = cleanText(
+                `${answers[answers.length - 1]} ${answerText}`
+              );
+            } else {
+              answers.push(cleanText(answerText));
+            }
+          }
         }
         i++;
       }
+
+      const questionText = joinTextParts(questionParts);
 
       // If it has no answers, treat it as normal text and skip it.
       if (!questionText || answers.length === 0) {
@@ -601,12 +1489,15 @@ function parseQuestions(text) {
         ) || isTrueFalsePair(answers)
           ? 'tf'
           : 'mc';
+      const normalized = type === 'tf'
+        ? canonicalizeTFAnswers(answers, correctIndex)
+        : { answers, correctIndex };
 
       questions.push({
         type,
         question: questionText,
-        answers,
-        correctIndex,
+        answers: normalized.answers,
+        correctIndex: normalized.correctIndex,
         id: generateId(),
         sourceNumber: parsedQuestion.number
       });
@@ -630,15 +1521,30 @@ function parseQuestions(text) {
           i++; continue;
         }
 
+        const aNextLineIndex = nextNonBlank(i + 1);
+        const aNextLine = aNextLineIndex >= 0 ? lines[aNextLineIndex] : '';
+        if (answers.length > 0 && parseStandaloneTfQuestion(aLine, aNextLine)) break;
+        if (answers.length > 0 && isUnnumberedMCQuestionStart(aLine, aNextLine)) break;
         if (isMCQuestion(aLine) || isTFQuestion(aLine)) break;
         if (isAnnotationLine(aLine)) { i++; continue; }
 
-        // Determine if it's a correct answer using available markers
-        if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isMCCorrectTrailingHash(aLine)) {
-          correctIndex = answers.length;
-          answers.push(cleanText(aLine)); // Keep markers like # or =
+        // Prefer "=" marker at the end for MC correct answers
+        if (isLeadingNotEqualsWrong(aLine) || isTrailingNotEqualsWrong(aLine)) {
+          const wrongText = stripTFWrongAnswerText(aLine);
+          if (wrongText) answers.push(cleanText(wrongText));
+        } else if (
+          isLeadingEqualsCorrect(aLine) ||
+          isTrailingEqualsCorrect(aLine) ||
+          isMCCorrectTrailingHash(aLine)
+        ) {
+          const correctText = stripMCCorrectAnswerText(aLine);
+          if (correctText) {
+            correctIndex = answers.length;
+            answers.push(cleanText(correctText));
+          }
         } else {
-          answers.push(cleanText(aLine));
+          const answerText = stripAnswerPrefix(aLine);
+          if (answerText) answers.push(cleanText(answerText));
         }
         i++;
       }
@@ -647,11 +1553,14 @@ function parseQuestions(text) {
         if (correctIndex === -1) correctIndex = 0;
         const qType =
           answers.length === 2 && isTrueFalsePair(answers) ? 'tf' : 'mc';
+        const normalized = qType === 'tf'
+          ? canonicalizeTFAnswers(answers, correctIndex)
+          : { answers, correctIndex };
         questions.push({
           type: qType,
           question: questionText,
-          answers,
-          correctIndex,
+          answers: normalized.answers,
+          correctIndex: normalized.correctIndex,
           id: generateId(),
           sourceNumber: parsedQuestion.number
         });
@@ -688,15 +1597,25 @@ function parseQuestions(text) {
           i++; continue;
         }
 
+        const aNextLineIndex = nextNonBlank(i + 1);
+        const aNextLine = aNextLineIndex >= 0 ? lines[aNextLineIndex] : '';
+        if (answers.length > 0 && isUnnumberedMCQuestionStart(aLine, aNextLine)) break;
         if (isMCQuestion(aLine) || isTFQuestion(aLine) || isNumberedQuestionStart(aLine)) break;
         if (isAnnotationLine(aLine)) { i++; continue; }
 
-        // Determine if it's a correct answer using available markers
-        if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isTFCorrectTrailing(aLine)) {
-          correctIndex = answers.length;
-          answers.push(cleanText(aLine)); // Keep markers like !! or =
+        // Prefer "=" (true) and "!=" (false) markers
+        if (isLeadingNotEqualsWrong(aLine) || isTrailingNotEqualsWrong(aLine) || isTFWrongTrailing(aLine)) {
+          const wrongText = stripTFWrongAnswerText(aLine);
+          if (wrongText) answers.push(cleanText(wrongText));
+        } else if (isLeadingEqualsCorrect(aLine) || isTrailingEqualsCorrect(aLine) || isTFCorrectTrailing(aLine)) {
+          const correctText = stripTFCorrectAnswerText(aLine);
+          if (correctText) {
+            correctIndex = answers.length;
+            answers.push(cleanText(correctText));
+          }
         } else {
-          answers.push(cleanText(aLine));
+          const answerText = stripAnswerPrefix(aLine);
+          if (answerText) answers.push(cleanText(answerText));
         }
         i++;
       }
@@ -717,11 +1636,12 @@ function parseQuestions(text) {
       }
 
       if (questionText) {
+        const normalized = canonicalizeTFAnswers(answers, correctIndex);
         questions.push({
           type: 'tf',
           question: questionText,
-          answers,
-          correctIndex,
+          answers: normalized.answers,
+          correctIndex: normalized.correctIndex,
           id: generateId(),
           sourceNumber: parsedQuestion.number
         });
@@ -901,6 +1821,7 @@ window.deleteQuestion = (globalIdx) => {
   persistActiveExamQuestions();
   updateTabCounts();
   renderQuestionsList();
+  queueAutoSyncToFirebase('حذف السؤال');
   showToast('تم حذف السؤال', 'warning');
 };
 
@@ -1006,11 +1927,24 @@ window.saveEditedQuestion = () => {
   if (validAnswers.length < 2) { showToast('يجب أن يكون هناك إجابتان على الأقل', 'error'); return; }
   // Adjust correct index if answers filtered
   const newCorrectIndex = Math.min(q.correctIndex, validAnswers.length - 1);
-  allQuestions[editingIndex] = { ...q, question: newText, answers: validAnswers, correctIndex: newCorrectIndex };
+  let finalAnswers = validAnswers;
+  let finalCorrectIndex = newCorrectIndex;
+  if (q.type === 'tf') {
+    const normalized = canonicalizeTFAnswers(validAnswers, newCorrectIndex);
+    finalAnswers = normalized.answers;
+    finalCorrectIndex = normalized.correctIndex;
+  }
+  allQuestions[editingIndex] = {
+    ...q,
+    question: newText,
+    answers: finalAnswers,
+    correctIndex: finalCorrectIndex
+  };
   persistActiveExamQuestions();
   closeEditModal();
   updateTabCounts();
   renderQuestionsList();
+  queueAutoSyncToFirebase('تعديل السؤال');
   showToast('تم تحديث السؤال بنجاح', 'success');
 };
 
@@ -1046,6 +1980,8 @@ window.resetAll = () => {
   currentFilter = 'all';
   isNavbarCollapsed = false;
   clearActiveExamQuestions();
+  clearActiveFirebaseExamKey();
+  clearImportProgressBanner();
   document.getElementById('headerNavbar').style.display = 'none';
   document.getElementById('headerTopActions').style.display = 'none';
   document.getElementById('navbarToggleBtn').style.display = 'none';
@@ -1075,45 +2011,21 @@ window.confirmSaveToFirebase = () => doSaveToFirebase();
 async function doSaveToFirebase() {
   showLoading('جاري الاتصال بـ Firebase...');
   try {
-    const db = getDB();
     setLoadingText('جاري حفظ الأسئلة...');
-
-    const examData = {
-      savedAt: new Date().toISOString(),
-      totalQuestions: allQuestions.length,
-      mcCount: allQuestions.filter(q => q.type === 'mc').length,
-      tfCount: allQuestions.filter(q => q.type === 'tf').length,
-      questions: allQuestions.map(q => ({
-        id: q.id,
-        type: q.type,
-        question: q.question,
-        answers: q.answers,
-        correctIndex: q.correctIndex,
-        correctAnswer: q.answers[q.correctIndex]
-      }))
-    };
-
-    // Timeout after 15 seconds
-    const refPath = db.ref(FIRESTORE_COLLECTION);
-    const savePromise = refPath.push(examData);
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error('timeout')), 15000)
-    );
-
-    const snap = await Promise.race([savePromise, timeoutPromise]);
+    const saved = await writeExamSnapshotToFirebase({ forceNew: true, timeoutMs: 15000 });
 
     hideLoading();
     document.getElementById('successMessage').textContent =
-      `تم حفظ ${allQuestions.length} سؤال في قاعدة البيانات بنجاح! (ID: ${snap.key})`;
+      `تم حفظ ${allQuestions.length} سؤال في قاعدة البيانات بنجاح! (ID: ${saved.key})`;
     document.getElementById('successModal').style.display = 'flex';
 
   } catch (err) {
     hideLoading();
     console.error('Firebase error:', err);
-    if (err.message === 'timeout' || (err.message && err.message.includes('permission'))) {
+    if (String(err?.message || '') === 'timeout' || (err.message && err.message.includes('permission'))) {
       showToast('⚠️ تأكد من أن قواعد قاعدة البيانات تسمح بالكتابة', 'error');
     } else {
-      showToast('فشل الحفظ: ' + err.message, 'error');
+      showToast('فشل الحفظ: ' + formatFirebaseSyncError(err), 'error');
     }
   }
 }
@@ -1267,13 +2179,13 @@ function initGroqUploadUi() {
   const btn = document.getElementById('saveGroqKeyBtn');
   if (!cb || !inp || !btn) return;
 
-  if (localStorage.getItem(USE_GROQ_UPLOAD_KEY) === null && DEFAULT_GROQ_API_KEY) {
-    localStorage.setItem(USE_GROQ_UPLOAD_KEY, '1');
+  const savedOverride = localStorage.getItem(GROQ_API_KEY_STORAGE_KEY);
+  const hasEmbedded = !!String(DEFAULT_GROQ_API_KEY || '').trim();
+  if (localStorage.getItem(USE_GROQ_UPLOAD_KEY) === null) {
+    localStorage.setItem(USE_GROQ_UPLOAD_KEY, savedOverride ? '1' : '0');
   }
   cb.checked = localStorage.getItem(USE_GROQ_UPLOAD_KEY) === '1';
 
-  const savedOverride = localStorage.getItem(GROQ_API_KEY_STORAGE_KEY);
-  const hasEmbedded = !!String(DEFAULT_GROQ_API_KEY || '').trim();
   inp.placeholder = savedOverride
     ? 'مفتاح محفوظ في المتصفح — الصق مفتاحاً جديداً للاستبدال'
     : hasEmbedded
